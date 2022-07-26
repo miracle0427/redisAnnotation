@@ -730,7 +730,20 @@ static void acceptCommonHandler(int fd, int flags, char *ip) {
     server.stat_numconnections++;
     c->flags |= flags;
 }
+/*
+    接受客户端连接,并创建已连接套接字cfd.然后, acceptCommonHandler函数会被调用，同
+    时,刚刚创建的已连接套接字cfd会作为参数,传递给acceptCommonHandler函数。
 
+    acceptCommonHandler函数会调用createClient 函数创建客户端。而在createClient函数中，
+    aeCreateFileEvent 函数被再次调用了。
+
+    此时，aeCreateFileEvent 函数会针对已连接套接字上，创建监听事件，类型为
+    AE_READABLE,回调函数是readQueryFromClient
+
+    到这里，事件驱动框架就增加了对一个客户端已连接套接字的监听。一旦客户端有请求
+    发送到server,框架就会回调readQueryFromClient函数处理请求。这样一来,客户端请求
+    就能通过事件驱动框架进行处理了。
+*/
 void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
     int cport, cfd, max = MAX_ACCEPTS_PER_CALL;
     char cip[NET_IP_STR_LEN];
@@ -1083,8 +1096,9 @@ int handleClientsWithPendingWrites(void) {
     listIter li;
     listNode *ln;
     int processed = listLength(server.clients_pending_write);
-
+    /* 获取待写回的客户端列表 */
     listRewind(server.clients_pending_write,&li);
+    /* 遍历每一个待写回的客户端  */
     while((ln = listNext(&li))) {
         client *c = listNodeValue(ln);
         c->flags &= ~CLIENT_PENDING_WRITE;
@@ -1094,11 +1108,12 @@ int handleClientsWithPendingWrites(void) {
          * that may trigger write error or recreate handler. */
         if (c->flags & CLIENT_PROTECTED) continue;
 
-        /* Try to write buffers to the client socket. */
+        /* 调用writeToClient将当前客户端的输出缓冲区数据写回给客户端socket  */
         if (writeToClient(c->fd,c,0) == C_ERR) continue;
 
         /* If after the synchronous writes above we still have data to
          * output to the client, we need to install the writable handler. */
+        /* 如果还有待写回数据 */
         if (clientHasPendingReplies(c)) {
             int ae_flags = AE_WRITABLE;
             /* For the fsync=always policy, we want that a given FD is never
@@ -1111,6 +1126,7 @@ int handleClientsWithPendingWrites(void) {
             {
                 ae_flags |= AE_BARRIER;
             }
+            /* 创建可写事件的监听，以及设置回调函数 */
             if (aeCreateFileEvent(server.el, c->fd, ae_flags,
                 sendReplyToClient, c) == AE_ERR)
             {

@@ -1103,7 +1103,19 @@ void updateCachedTime(int update_daylight_info) {
  * so in order to throttle execution of things we want to do less frequently
  * a macro is used: run_with_period(milliseconds) { .... }
  */
+/*
+    一方面，serverCron函数会顺序调用一些函数,来实现时间事件被触发后，执行一些后台任务。
+    比如，serverCron 函数会检查是否有进程结束信号，若有就执行server关闭操作。
+    serverCron 会调用databaseCron函数,处理过期key或进行rehash等。
 
+    另一方面，serverCron 函数还会以不同的频率周期性执行一些任务, 这是通过执行宏
+    run_with_period 实现的。run_with_period 宏定义如下，该宏定义会根据Redis实例
+    配置文件redis.conf中定义的hz值，来判断参数 _ms_ 表示的时间戳是否到达。
+    一旦到达, serverCron 就可以执行相应的任务了。
+
+    比如，serverCron 函数中会以1秒1次的频率,检查AOF文件是否有写错误。如果有的
+    话，serverCron就会调用flushAppendOnlyFile函数,再次刷回AOF文件的缓存数据。
+*/
 int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     int j;
     UNUSED(eventLoop);
@@ -2060,6 +2072,12 @@ void initServer(void) {
 
     createSharedObjects();
     adjustOpenFilesLimit();
+    /* 
+        调用aeCreateEventLoop函数创建aeEventLoop结构体，并赋值给server结构的el变量
+        参数setsize的大小，其实是由server结构的maxclients变量 和 宏定义 CONFIG_FDSET_INCR共同决定的。
+        其中maxclients变量的值的大小，可以在redis的配置文件redis.conf中进行定义，默认值是1000
+        宏定义CONFIG_FDSET_INCR的大小，等于宏定义CONFIG_MIN_RESERVED_FDS + 96
+     */
     server.el = aeCreateEventLoop(server.maxclients+CONFIG_FDSET_INCR);
     if (server.el == NULL) {
         serverLog(LL_WARNING,
@@ -2142,13 +2160,30 @@ void initServer(void) {
     /* Create the timer callback, this is our way to process many background
      * operations incrementally, like clients timeout, eviction of unaccessed
      * expired keys and so forth. */
+    /*
+        实际上，Redis server在初始化时,除了创建监听的IO事件外，也会调用aeCreateTimeEvent函数创建时间事件。
+    */
     if (aeCreateTimeEvent(server.el, 1, serverCron, NULL, NULL) == AE_ERR) {
         serverPanic("Can't create event loop timers.");
         exit(1);
     }
 
     /* Create an event handler for accepting new connections in TCP and Unix
-     * domain sockets. */
+     * domain sockets. */ 
+    /*
+        事件驱动框架是redis server运行后的核心循环流程
+        事件驱动框架运行的基本流程：
+            server初始化时调用aeCreateFileEvent函数注册监听事件
+            server初始化完成后调用aeMain函数
+            aeMain函数循环执行aeProcessEvents函数来捕获和处理客户端请求触发的事件
+    */
+
+    /* 
+        为每个IP端口上的网络事件，调用aeCreateFileEvent，创建对AE_READABLE事件的监听，
+        并且注册AE_READABLE事件的处理函数handler，也就是acceptTcpHandler函数
+
+        AE_READABLE事件就是客户端的网络连接事件，而对应的处理函数就是接收TCP连接请求
+     */
     for (j = 0; j < server.ipfd_count; j++) {
         if (aeCreateFileEvent(server.el, server.ipfd[j], AE_READABLE,
             acceptTcpHandler,NULL) == AE_ERR)
