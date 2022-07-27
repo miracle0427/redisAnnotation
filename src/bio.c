@@ -61,10 +61,16 @@
 #include "server.h"
 #include "bio.h"
 
-static pthread_t bio_threads[BIO_NUM_OPS];
-static pthread_mutex_t bio_mutex[BIO_NUM_OPS];
-static pthread_cond_t bio_newjob_cond[BIO_NUM_OPS];
-static pthread_cond_t bio_step_cond[BIO_NUM_OPS];
+static pthread_t bio_threads[BIO_NUM_OPS];  /* 保存创建的线程描述符 */
+static pthread_mutex_t bio_mutex[BIO_NUM_OPS];  /* 保存互斥锁 */
+static pthread_cond_t bio_newjob_cond[BIO_NUM_OPS]; /* 保存条件变量 */
+static pthread_cond_t bio_step_cond[BIO_NUM_OPS];   /* 保存条件变量 */
+/*
+    表示后台任务
+    该结构体的成员变量包括了后台任务的创建时间time，以及任务的参数。
+    为该数组的每个元素创建一个列表，其实就是为每个后台线程创建一个
+    要处理的任务列表
+*/
 static list *bio_jobs[BIO_NUM_OPS];
 /* The following array is used to hold the number of pending jobs for every
  * OP type. This allows us to export the bioPendingJobsOfType() API that is
@@ -72,6 +78,10 @@ static list *bio_jobs[BIO_NUM_OPS];
  * objects shared with the background thread. The main thread will just wait
  * that there are no longer jobs of this type to be executed before performing
  * the sensible operation. This data is also useful for reporting. */
+/*
+    表示每种任务中，处于等待状态的任务个数。将该数组每个元素初始化为0，
+    其实就是表示初始时，每种任务都没有待处理的具体任务
+*/
 static unsigned long long bio_pending[BIO_NUM_OPS];
 
 /* This structure represents a background Job. It is only used locally to this
@@ -93,13 +103,26 @@ void lazyfreeFreeSlotsMapFromBioThread(zskiplist *sl);
 #define REDIS_THREAD_STACK_SIZE (1024*1024*4)
 
 /* Initialize the background system, spawning the thread. */
+/*
+    Redis后台线程的创建和运行机制。简单来说，主要是以下三个关键点:
+    1. Redis 是先通过bioInit函数初始化和创建后台线程;
+    2. 后台线程运行的是bioProcessBackgroundJobs函数,这个函数会轮询任务队列，
+       并根据要处理的任务类型，调用相应函数进行处理;
+    3. 后台线程要处理的任务是由bioCreateBackgroundJob函数来创建的,
+       这些任务创建后会被放到任务队列中，等待bioProcessBackgroundJobs函数处理。
+*/
 void bioInit(void) {
     pthread_attr_t attr;
     pthread_t thread;
     size_t stacksize;
     int j;
 
-    /* Initialization of state vars and objects */
+    /*
+        bioInit 函数执行时，会把线程互斥锁、条件变量对应数组初始化为NULL,
+        同时会给每个后台线程创建一个任务列表 (对应 bio_jobs数组的元素)，以及会
+        设置每种任务的待处理个数为0 (对应bio_pending数组的元素)。
+        
+    */
     for (j = 0; j < BIO_NUM_OPS; j++) {
         pthread_mutex_init(&bio_mutex[j],NULL);
         pthread_cond_init(&bio_newjob_cond[j],NULL);
@@ -109,6 +132,12 @@ void bioInit(void) {
     }
 
     /* Set the stack size as by default it may be small in some system */
+    /*
+        首先，bioInit 函数会调用pthread_attr_init 函数,初始化线程属性变量attr
+        然后调用pthread_attr_getstacksize 函数，获取线程的栈大小这一属性的当前值,并根据当前栈大小
+        和REDIS_THREAD_STACK_SIZE宏定义的大小(默认值为4MB) , 来计算最终的栈大小属性值。
+        紧接着, bioInit 函数会调用pthread_attr_setstacksize 函数,来设置栈大小这一属性值。
+    */
     pthread_attr_init(&attr);
     pthread_attr_getstacksize(&attr,&stacksize);
     if (!stacksize) stacksize = 1; /* The world is full of Solaris Fixes */
@@ -120,6 +149,16 @@ void bioInit(void) {
      * responsible of. */
     for (j = 0; j < BIO_NUM_OPS; j++) {
         void *arg = (void*)(unsigned long) j;
+        /*
+            函数原型：
+                int pthread_create (
+                    pthread_t * tidp, 
+                    const pthread_attr_t * attr, 
+                    void * (*start_rtn)(void*), 
+                    void *arg
+                    );
+            为每种后台任务创建一个线程
+        */
         if (pthread_create(&thread,&attr,bioProcessBackgroundJobs,arg) != 0) {
             serverLog(LL_WARNING,"Fatal: Can't initialize Background Jobs.");
             exit(1);
@@ -127,7 +166,7 @@ void bioInit(void) {
         bio_threads[j] = thread;
     }
 }
-
+/* 创建后台任务 */
 void bioCreateBackgroundJob(int type, void *arg1, void *arg2, void *arg3) {
     struct bio_job *job = zmalloc(sizeof(*job));
 
@@ -141,7 +180,18 @@ void bioCreateBackgroundJob(int type, void *arg1, void *arg2, void *arg3) {
     pthread_cond_signal(&bio_newjob_cond[type]);
     pthread_mutex_unlock(&bio_mutex[type]);
 }
+/*
+    bioProcessBackgroundJobs函数的主要执行逻辑是一个while(1)的循环。在这个循环中,
+    bioProcessBackgroundJobs函数会从bio_jobs 这个数组中取出相应任务,并根据任务类
+    型，调用具体的函数来执行。
 
+    bio_jobs 数组的每一个元素是一个队列。 而因为bio_jobs数组的元素个数,等于后台任务
+    的类型个数(也就是BIO_NUM_OPS)，所以，bio_jobs数组的每个元素,实际上是对应了某一种
+    后台任务的任务队列。
+    
+    所以在这个循环中，bioProcessBackgroundJobs 函数会一直不停地从某一种任务队列中，
+    取出一个任务来执行
+*/
 void *bioProcessBackgroundJobs(void *arg) {
     struct bio_job *job;
     unsigned long type = (unsigned long) arg;
@@ -176,23 +226,24 @@ void *bioProcessBackgroundJobs(void *arg) {
             pthread_cond_wait(&bio_newjob_cond[type],&bio_mutex[type]);
             continue;
         }
-        /* Pop the job from the queue. */
+        /* 从类型为type的任务队列中获取第一个任务. */
         ln = listFirst(bio_jobs[type]);
         job = ln->value;
         /* It is now possible to unlock the background system as we know have
          * a stand alone job structure to process.*/
         pthread_mutex_unlock(&bio_mutex[type]);
 
-        /* Process the job accordingly to its type. */
+        /* 判断当前处理的后台任务类型是哪一种 */
         if (type == BIO_CLOSE_FILE) {
-            close((long)job->arg1);
+            close((long)job->arg1); /* 如果是关闭文件任务，就调用close函数 */
         } else if (type == BIO_AOF_FSYNC) {
-            redis_fsync((long)job->arg1);
+            redis_fsync((long)job->arg1);   /* 如果是AOF同步写任务，就调用redis_fsync */
         } else if (type == BIO_LAZY_FREE) {
             /* What we free changes depending on what arguments are set:
              * arg1 -> free the object at pointer.
              * arg2 & arg3 -> free two dictionaries (a Redis DB).
              * only arg3 -> free the skiplist. */
+            /* 如果是惰性删除任务，那根据任务的参数分别调用不同的惰性删除函数执行 */
             if (job->arg1)
                 lazyfreeFreeObjectFromBioThread(job->arg1);
             else if (job->arg2 && job->arg3)
@@ -207,6 +258,7 @@ void *bioProcessBackgroundJobs(void *arg) {
         /* Lock again before reiterating the loop, if there are no longer
          * jobs to process we'll block again in pthread_cond_wait(). */
         pthread_mutex_lock(&bio_mutex[type]);
+        /* 任务执行完成后，调用listDelNode在任务队列中删除该任务 */
         listDelNode(bio_jobs[type],ln);
         bio_pending[type]--;
 

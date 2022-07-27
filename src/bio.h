@@ -36,7 +36,7 @@ time_t bioOlderJobOfType(int type);
 void bioKillThreads(void);
 
 /* Background job opcodes */
-#define BIO_CLOSE_FILE    0 /* Deferred close(2) syscall. */
-#define BIO_AOF_FSYNC     1 /* Deferred AOF fsync. */
-#define BIO_LAZY_FREE     2 /* Deferred objects freeing. */
-#define BIO_NUM_OPS       3
+#define BIO_CLOSE_FILE    0 /* 文件关闭后台任务 */
+#define BIO_AOF_FSYNC     1 /* AOF日志同步写回后台任务 */
+#define BIO_LAZY_FREE     2 /* 惰性删除后台任务 */
+#define BIO_NUM_OPS       3 /* 表示redis后台任务的类型有三种 */

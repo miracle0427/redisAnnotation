@@ -2238,6 +2238,8 @@ void initServer(void) {
  * Specifically, creation of threads due to a race bug in ld.so, in which
  * Thread Local Storage initialization collides with dlopen call.
  * see: https://sourceware.org/bugzilla/show_bug.cgi?id=19329 */
+
+/* redis在完成server初始化后，就会创建线程来执行后台任务 */
 void InitServerLast() {
     bioInit();
     server.initial_memory_usage = zmalloc_used_memory();
