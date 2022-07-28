@@ -76,15 +76,20 @@ void setGenericCommand(client *c, int flags, robj *key, robj *val, robj *expire,
         }
         if (unit == UNIT_SECONDS) milliseconds *= 1000;
     }
-
+    /* 
+        如果set命令参数中有NX选项，调用lookupKeyWrite，查找要执行set命令的key是否已经存在
+        如果已经存在，那就调用addReply返回NULL值
+    */
     if ((flags & OBJ_SET_NX && lookupKeyWrite(c->db,key) != NULL) ||
         (flags & OBJ_SET_XX && lookupKeyWrite(c->db,key) == NULL))
     {
         addReply(c, abort_reply ? abort_reply : shared.nullbulk);
         return;
     }
+    /* 如果set命令带有NX选项但是key并不存在，或者带有XX命令但是key已经存在，则完成键值对的插入 */
     setKey(c->db,key,val);
     server.dirty++;
+    /* 如果set命令设置了过期时间，调用setExpire函数设置过期时间 */
     if (expire) setExpire(c,c->db,key,mstime()+milliseconds);
     notifyKeyspaceEvent(NOTIFY_STRING,"set",key,c->db->id);
     if (expire) notifyKeyspaceEvent(NOTIFY_GENERIC,

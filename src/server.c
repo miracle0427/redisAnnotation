@@ -1718,6 +1718,10 @@ void initServerConfig(void) {
     /* Command table -- we initiialize it here as it is part of the
      * initial configuration, since command names may be changed via
      * redis.conf using the rename-command directive. */
+    /*
+        dictCreate完成命令hash表创建，在调用populateCommandTable将
+        redis提供的命令名称和对应的实现函数插入到hash表中
+    */
     server.commands = dictCreate(&commandTableDictType,NULL);
     server.orig_commands = dictCreate(&commandTableDictType,NULL);
     populateCommandTable();
@@ -2610,12 +2614,14 @@ void call(client *c, int flags) {
  * other operations can be performed by the caller. Otherwise
  * if C_ERR is returned the client was destroyed (i.e. after QUIT). */
 int processCommand(client *c) {
+    /* 第一步，将redis命令替换成module中想要替换的命令 */
     moduleCallCommandFilters(c);
 
     /* The QUIT command is handled separately. Normal command procs will
      * go through checking for replication and QUIT will cause trouble
      * when FORCE_REPLICATION is enabled and would be implemented in
      * a regular command proc. */
+    /* 第二步，判断是否是quit命令并进行相应的处理 */
     if (!strcasecmp(c->argv[0]->ptr,"quit")) {
         addReply(c,shared.ok);
         c->flags |= CLIENT_CLOSE_AFTER_REPLY;
@@ -2624,6 +2630,10 @@ int processCommand(client *c) {
 
     /* Now lookup the command and check ASAP about trivial error conditions
      * such as wrong arity, bad command name and so forth. */
+    /* 
+        第三步，在全局变量server的commands成员变量中查找相关的命令
+        全局变量server的commands成员变量是一个哈希表
+    */
     c->cmd = c->lastcmd = lookupCommand(c->argv[0]->ptr);
     if (!c->cmd) {
         flagTransaction(c);
@@ -2790,6 +2800,10 @@ int processCommand(client *c) {
     }
 
     /* Exec the command */
+    /*
+        如果当前客户端有CLIENT_MULTI标记，表明要处理的是redis事物的相关命令，
+        按照事务的要求，调用queueMultiCommand函数将命令入队保存，等待后续一起处理，
+    */
     if (c->flags & CLIENT_MULTI &&
         c->cmd->proc != execCommand && c->cmd->proc != discardCommand &&
         c->cmd->proc != multiCommand && c->cmd->proc != watchCommand)
@@ -2797,6 +2811,10 @@ int processCommand(client *c) {
         queueMultiCommand(c);
         addReply(c,shared.queued);
     } else {
+    /*
+        如果没有就调用call函数来执行命令
+        通过调用命令本身，即redisCommand结构体中定义的函数指针来完成
+    */
         call(c,CMD_CALL_FULL);
         c->woff = server.master_repl_offset;
         if (listLength(server.ready_keys))

@@ -296,6 +296,7 @@ void _addReplyStringToList(client *c, const char *s, size_t len) {
 
 /* Add the object 'obj' string representation to the client output buffer. */
 void addReply(client *c, robj *obj) {
+    /* 将待写会的客户端加入到全局变量server的clients_pending_write列表中 */
     if (prepareClientToWrite(c) != C_OK) return;
 
     if (sdsEncodedObject(obj)) {
@@ -307,6 +308,7 @@ void addReply(client *c, robj *obj) {
          * to the output buffer. */
         char buf[32];
         size_t len = ll2string(buf,sizeof(buf),(long)obj->ptr);
+            /* 将要返回的结果添加到客户端的输出缓冲区中 */
         if (_addReplyToBuffer(c,buf,len) != C_OK)
             _addReplyStringToList(c,buf,len);
     } else {
@@ -1459,8 +1461,17 @@ void processInputBuffer(client *c) {
 
         /* Determine request type when unknown. */
         if (!c->reqtype) {
+            /*
+                如果命令以 * 开头，表明这个命令是PROTO_REQ_MULTIBULK类型的命令请求，
+                也就是符合RESP协议（redis客户端与服务器端的标准通信协议）的请求，那么进一步
+                调用processMultibulkBuffer函数来解析读取到的命令
+            */
             if (c->querybuf[c->qb_pos] == '*') {
                 c->reqtype = PROTO_REQ_MULTIBULK;
+            /*
+                否则表明是PROTO_REQ_INLINE类型的命令请求，也被称为管道命令
+                命令和命令之间是使用换行符 "\r\n"分隔开来的
+            */
             } else {
                 c->reqtype = PROTO_REQ_INLINE;
             }
@@ -1513,8 +1524,18 @@ void processInputBuffer(client *c) {
  * is flagged as master. Usually you want to call this instead of the
  * raw processInputBuffer(). */
 void processInputBufferAndReplicate(client *c) {
+    /*
+        客户端没有CLIENT_MASTER标记，即当前客户端不属于主从复制中的主节点，
+        则直接调用processInputBuffer函数对客户端输入缓冲区的命令和参数进行解析
+    */
     if (!(c->flags & CLIENT_MASTER)) {
         processInputBuffer(c);
+    /*
+        客户端有CLIENT_MASTER标记，即当前客户端属于主从复制中的主节点，
+        那么除了调用processInputBuffer函数解析客户端命令外，还会调用
+        replicationFeedSlavesFromMasterStream函数将主节点接收到的命令同步给从节点
+    
+    */
     } else {
         size_t prev_offset = c->reploff;
         processInputBuffer(c);
@@ -1533,7 +1554,10 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     size_t qblen;
     UNUSED(el);
     UNUSED(mask);
-
+    
+    /*
+        从客户端连接的socket中，读取最大为readlen长度的数据
+    */
     readlen = PROTO_IOBUF_LEN;
     /* If this is a multi bulk request, and we are processing a bulk reply
      * that is large enough, try to maximize the probability that the query
@@ -1555,6 +1579,11 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     if (c->querybuf_peak < qblen) c->querybuf_peak = qblen;
     c->querybuf = sdsMakeRoomFor(c->querybuf, readlen);
     nread = read(fd, c->querybuf+qblen, readlen);
+    /*
+        根据读取数据的情况，进行一些异常处理，比如读取失败或是客户端连接关闭
+        此外，如果当前客户端是主从复制中的主节点，还会把读取的数据，追加到用于
+        主从节点命令同步的缓冲区
+    */
     if (nread == -1) {
         if (errno == EAGAIN) {
             return;
