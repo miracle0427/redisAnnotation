@@ -670,6 +670,15 @@ dictEntry *dictGetRandomKey(dict *d)
  * of continuous elements to run some kind of algorithm or to produce
  * statistics. However the function is much faster than dictGetRandomKey()
  * at producing N elements. */
+/*
+    第一点：dictGetSomeKeys函数采样的哈希表，是由maxmemory_policy配置项来决定的。
+    如果maxmemory_policy配置的是allkeys_lru，那么待采样的哈希表就是redis server
+    的全局哈希表，也就是在所有的键值对中进行采样；否则，待采样哈希表就是保存着
+    设置了过期时间的key的哈希表
+
+    第二点，dictGetSomeKeys函数采样的key的数量，是由redis.conf中的配置项
+    maxmemory-samples决定的，该配置项的默认值是5.
+*/
 unsigned int dictGetSomeKeys(dict *d, dictEntry **des, unsigned int count) {
     unsigned long j; /* internal hash table id, 0 or 1. */
     unsigned long tables; /* 1 or 2 tables? */

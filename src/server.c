@@ -1163,6 +1163,11 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
      *
      * Note that you can change the resolution altering the
      * LRU_CLOCK_RESOLUTION define. */
+    /*
+        serverCron作为时间事件的回调函数，本身会按照一定的频率周期执行，
+        全局LRU时钟值就会按照这个函数的执行频率，定期调用getLRUClock函数进行更新
+        这样每个键值对就可以从全局LRU时钟获取最新的访问时间戳了
+    */
     unsigned long lruclock = getLRUClock();
     atomicSet(server.lruclock,lruclock);
 
@@ -1662,6 +1667,7 @@ void initServerConfig(void) {
     server.always_show_logo = CONFIG_DEFAULT_ALWAYS_SHOW_LOGO;
     server.lua_time_limit = LUA_SCRIPT_TIME_LIMIT;
 
+    /* 全局LRU时钟值就是通过getLRUClock函数计算得到的 */
     unsigned int lruclock = getLRUClock();
     atomicSet(server.lruclock,lruclock);
     resetServerSaveParams();
@@ -2693,6 +2699,7 @@ int processCommand(client *c) {
      * the event loop since there is a busy Lua script running in timeout
      * condition, to avoid mixing the propagation of scripts with the
      * propagation of DELs due to eviction. */
+    /* 如果redis server的maxmemory配置项为非0值或者lua脚本没有在超时运行 */
     if (server.maxmemory && !server.lua_timedout) {
         int out_of_memory = freeMemoryIfNeededAndSafe() == C_ERR;
         /* freeMemoryIfNeeded may flush slave output buffers. This may result

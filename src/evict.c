@@ -51,11 +51,12 @@
  * Empty entries have the key pointer set to NULL. */
 #define EVPOOL_SIZE 16
 #define EVPOOL_CACHED_SDS_SIZE 255
+/* 保存待淘汰的候选键值对 */
 struct evictionPoolEntry {
-    unsigned long long idle;    /* Object idle time (inverse frequency for LFU) */
-    sds key;                    /* Key name. */
-    sds cached;                 /* Cached SDS object for key name. */
-    int dbid;                   /* Key DB number. */
+    unsigned long long idle;    /* 待淘汰的键值对的空闲时间 */
+    sds key;                    /* 待淘汰的键值对的key */
+    sds cached;                 /* 缓存的SDS对象 */
+    int dbid;                   /* 待淘汰键值对的key所在的数据库ID */
 };
 
 static struct evictionPoolEntry *EvictionPoolLRU;
@@ -68,6 +69,11 @@ static struct evictionPoolEntry *EvictionPoolLRU;
  * in a reduced-bits format that can be used to set and check the
  * object->lru field of redisObject structures. */
 unsigned int getLRUClock(void) {
+    /* 
+        LRU时钟精度是1秒，如果一个数据前后两次访问的时间间隔小于1秒，那么
+        这两次访问的时间戳就是一样的，因为LRU时钟的精度就是1秒，它无法区分
+        间隔小于1秒的不同时间戳
+     */
     return (mstime()/LRU_CLOCK_RESOLUTION) & LRU_CLOCK_MAX;
 }
 
@@ -185,6 +191,7 @@ void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evic
          * idle just because the code initially handled LRU, but is in fact
          * just a score where an higher score means better candidate. */
         if (server.maxmemory_policy & MAXMEMORY_FLAG_LRU) {
+            /* 计算在采样集合中的每一个键值对的空闲时间 */
             idle = estimateObjectIdleTime(o);
         } else if (server.maxmemory_policy & MAXMEMORY_FLAG_LFU) {
             /* When we use an LRU policy, we sort the keys by idle time
@@ -216,6 +223,8 @@ void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evic
         } else if (k < EVPOOL_SIZE && pool[k].key == NULL) {
             /* Inserting into empty position. No setup needed before insert. */
         } else {
+            /* 能够在数组中找到一个空闲时间小于采样键值对空闲时间的键值对 */
+
             /* Inserting in the middle. Now k points to the first element
              * greater than the element to insert.  */
             if (pool[EVPOOL_SIZE-1].key == NULL) {
@@ -228,6 +237,7 @@ void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evic
                     sizeof(pool[0])*(EVPOOL_SIZE-k-1));
                 pool[k].cached = cached;
             } else {
+                /* 能够在数组中找到一个尚未插入键值对的空位 */
                 /* No free space on right? Insert at k-1 */
                 k--;
                 /* Shift all elements on the left of k (included) to the
@@ -398,6 +408,7 @@ int getMaxmemoryState(size_t *total, size_t *logical, size_t *tofree, float *lev
 
     /* Check if we are over the memory usage limit. If we are not, no need
      * to subtract the slaves output buffers. We can just return ASAP. */
+    /* 计算已使用的内存量 */
     mem_reported = zmalloc_used_memory();
     if (total) *total = mem_reported;
 
@@ -407,6 +418,7 @@ int getMaxmemoryState(size_t *total, size_t *logical, size_t *tofree, float *lev
 
     /* Remove the size of slaves output buffers and AOF buffer from the
      * count of used memory. */
+    /* 将用于主从复制的复制缓冲区大小从已使用的内存量中扣除 */
     mem_used = mem_reported;
     size_t overhead = freeMemoryGetNotCountedMemory();
     mem_used = (mem_used > overhead) ? mem_used-overhead : 0;
@@ -423,6 +435,7 @@ int getMaxmemoryState(size_t *total, size_t *logical, size_t *tofree, float *lev
     if (return_ok_asap) return C_OK;
 
     /* Check if we are still over the memory limit. */
+    /* 计算需要释放的内存量 */
     if (mem_used <= server.maxmemory) return C_OK;
 
     /* Compute how much memory we need to free. */
@@ -443,6 +456,7 @@ int getMaxmemoryState(size_t *total, size_t *logical, size_t *tofree, float *lev
  * were over the limit, but the attempt to free memory was successful.
  * Otehrwise if we are over the memory limit, but not enough memory
  * was freed to return back under the limit, the function returns C_ERR. */
+/* processCommand --> freeMemoryIfNeededAndSafe --> freeMemoryIfNeeded */
 int freeMemoryIfNeeded(void) {
     /* By default replicas should ignore maxmemory
      * and just be masters exact copies. */
@@ -457,6 +471,9 @@ int freeMemoryIfNeeded(void) {
      * POV of clients not being able to write, but also from the POV of
      * expires and evictions of keys not being performed. */
     if (clientsArePaused()) return C_OK;
+    /*
+        第一步：判断当前内存使用情况，如果当前内存使用量没有超过maxmemory，返回
+    */
     if (getMaxmemoryState(&mem_reported,NULL,&mem_tofree,NULL) == C_OK)
         return C_OK;
 
@@ -474,7 +491,10 @@ int freeMemoryIfNeeded(void) {
         redisDb *db;
         dict *dict;
         dictEntry *de;
-
+        
+        /*
+            第二步：更新待淘汰的候选键值对集合
+        */
         if (server.maxmemory_policy & (MAXMEMORY_FLAG_LRU|MAXMEMORY_FLAG_LFU) ||
             server.maxmemory_policy == MAXMEMORY_VOLATILE_TTL)
         {
@@ -496,7 +516,13 @@ int freeMemoryIfNeeded(void) {
                     }
                 }
                 if (!total_keys) break; /* No keys to evict. */
-
+                
+                /*
+                    第三步：选择被淘汰的键值对并删除
+                        evictionPoolPopulate函数已经更新了EvictionPoolLRU数组，而且这个数组里面的key，
+                    是按照空闲时间从小到大排好序了，所以只需要从后往前遍历，如果所选到的key不是空值，
+                    那么就把它作为最终淘汰的key
+                */
                 /* Go backward from best to worst element to evict. */
                 for (k = EVPOOL_SIZE-1; k >= 0; k--) {
                     if (pool[k].key == NULL) continue;
@@ -550,6 +576,9 @@ int freeMemoryIfNeeded(void) {
         }
 
         /* Finally remove the selected key. */
+        /*
+            最后，一旦选到了被淘汰的key，则根据redis server的惰性删除配置，来执行同步删除或异步删除
+        */
         if (bestkey) {
             db = server.db+bestdbid;
             robj *keyobj = createStringObject(bestkey,sdslen(bestkey));
@@ -631,5 +660,6 @@ cant_free:
  */
 int freeMemoryIfNeededAndSafe(void) {
     if (server.lua_timedout || server.loading) return C_OK;
+    /* lua脚本没有在超时运行 且 redis server没有在加载数据，就会来释放内存 */
     return freeMemoryIfNeeded();
 }

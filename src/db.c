@@ -64,6 +64,9 @@ robj *lookupKey(redisDb *db, robj *key, int flags) {
             server.aof_child_pid == -1 &&
             !(flags & LOOKUP_NOTOUCH))
         {
+            /*
+                当访问一个键值对的时候会更新访问时间戳
+            */
             if (server.maxmemory_policy & MAXMEMORY_FLAG_LFU) {
                 updateLFU(val);
             } else {
