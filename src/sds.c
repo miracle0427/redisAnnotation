@@ -73,22 +73,24 @@ static inline char sdsReqType(size_t string_size) {
 #endif
 }
 
-/* Create a new sds string with the content specified by the 'init' pointer
- * and 'initlen'.
- * If NULL is used for 'init' the string is initialized with zero bytes.
- * If SDS_NOINIT is used, the buffer is left uninitialized;
- *
- * The string is always null-termined (all the sds strings are, always) so
- * even if you create an sds string with:
- *
- * mystring = sdsnewlen("abc",3);
- *
- * You can print the string with printf() as there is an implicit \0 at the
- * end of the string. However the string is binary safe and can contain
- * \0 characters in the middle, as the length is stored in the sds header. */
+/* 
+ * 根据init指针所指向的内容和initlen创建一个新的sds字符串
+ * 如果init是NULL，那么字符串用0来初始化
+ * 如果使用了SDS_NOINIT，那么buffer将不会初始化
+ * 
+ * 所有的sds字符串总是用null结尾的，即使你用 mystring = sdsnewlen("abc",3); 来创建一个sds字符换
+ * 你可以使用printf()来打印字符串，因为字符串末尾固定会有 \0
+ * 然而这个字符串是二进制安全的并且可以在中间包含 \0 字符，因为长度存储在sds头中
+ * 
+ *    在创建新的字符串时，Redis 会调用SDS创建函数sdsnewlen。sdsnewlen 函数会新建
+ *  sds类型变量(也就是char*类型变量)，并新建 SDS结构体,把SDS结构体中的数组
+ *  buf[]赋给sds类型变量。最后，sdsnewlen 函数会把要创建的字符串拷贝给sds变量。
+ * 
+ * */
+
 sds sdsnewlen(const void *init, size_t initlen) {
-    void *sh;
-    sds s;
+    void *sh;   /* 指向sds结构体的指针 */
+    sds s;  /* sds类型变量，即char * 字符数组 */
     char type = sdsReqType(initlen);
     /* Empty strings are usually created in order to append. Use type 8
      * since type 5 is not good at this. */
@@ -96,13 +98,13 @@ sds sdsnewlen(const void *init, size_t initlen) {
     int hdrlen = sdsHdrSize(type);
     unsigned char *fp; /* flags pointer. */
 
-    sh = s_malloc(hdrlen+initlen+1);
+    sh = s_malloc(hdrlen+initlen+1);    /* 新建sds结构，并分配内存 */
     if (init==SDS_NOINIT)
         init = NULL;
     else if (!init)
         memset(sh, 0, hdrlen+initlen+1);
     if (sh == NULL) return NULL;
-    s = (char*)sh+hdrlen;
+    s = (char*)sh+hdrlen;   /* sds类型变量指向SDS结构体中的buf数组 */
     fp = ((unsigned char*)s)-1;
     switch(type) {
         case SDS_TYPE_5: {
@@ -139,8 +141,8 @@ sds sdsnewlen(const void *init, size_t initlen) {
         }
     }
     if (initlen && init)
-        memcpy(s, init, initlen);
-    s[initlen] = '\0';
+        memcpy(s, init, initlen);   /* 将要传入的字符串拷贝给sds变量 */
+    s[initlen] = '\0';  /* 变量s末尾增加\0，表示字符串结束 */
     return s;
 }
 
@@ -389,11 +391,12 @@ sds sdsgrowzero(sds s, size_t len) {
     return s;
 }
 
-/* Append the specified binary-safe string pointed by 't' of 'len' bytes to the
- * end of the specified sds string 's'.
- *
- * After the call, the passed sds string is no longer valid and all the
- * references must be substituted with the new pointer returned by the call. */
+/* 将指针t指向的二进制安全的字符串的前len个字节追加到s的末尾
+ * 
+ * 调用之后，传递进来的sds字符串将不再有效，所有的引用必须用这个调用返回的新指针进行替换
+ * 目标字符串s、源字符串t和要追加的长度len
+ * 
+ * */
 sds sdscatlen(sds s, const void *t, size_t len) {
     size_t curlen = sdslen(s);
 
