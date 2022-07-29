@@ -46,12 +46,18 @@
 
 typedef struct dictEntry {
     void *key;
+    /* 
+        键值对的值是由一个联合体v定义的 
+        这种实现方式是一种节省内存的开发小技巧，因为当值为整数或双精度浮点数时，
+        由于其本身就是64位，就可以不用指针指向了，而是直接存在键值对的结构体中，
+        这样就避免再用一个指针，从而节省了内存开销    
+    */
     union {
         void *val;
         uint64_t u64;
         int64_t s64;
         double d;
-    } v;
+    } v;    
     struct dictEntry *next;
 } dictEntry;
 
@@ -67,8 +73,8 @@ typedef struct dictType {
 /* This is our hash table structure. Every dictionary has two of this as we
  * implement incremental rehashing, for the old to the new table. */
 typedef struct dictht {
-    dictEntry **table;
-    unsigned long size;
+    dictEntry **table;  /* 二维数组，这个数组的每个元素是一个指向哈希项dictEntry的指针 */
+    unsigned long size; /* hash表大小 */
     unsigned long sizemask;
     unsigned long used;
 } dictht;
@@ -77,7 +83,7 @@ typedef struct dict {
     dictType *type;
     void *privdata;
     dictht ht[2];
-    long rehashidx; /* rehashing not in progress if rehashidx == -1 */
+    long rehashidx; /* 如果没有在进行rehash，rehashidx为-1，否则表示正在进行rehash的bucket的下标 */
     unsigned long iterators; /* number of iterators currently running */
 } dict;
 
