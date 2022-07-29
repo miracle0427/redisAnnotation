@@ -1454,7 +1454,7 @@ void afterSleep(struct aeEventLoop *eventLoop) {
 }
 
 /* =========================== Server initialization ======================== */
-
+/* 对于经常使用的数据，创建共享对象 */
 void createSharedObjects(void) {
     int j;
 

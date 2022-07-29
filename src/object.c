@@ -85,11 +85,14 @@ robj *createRawStringObject(const char *ptr, size_t len) {
  * an object where the sds string is actually an unmodifiable string
  * allocated in the same chunk as the object itself. */
 robj *createEmbeddedStringObject(const char *ptr, size_t len) {
+    /* 分配连续内存空间 */
     robj *o = zmalloc(sizeof(robj)+sizeof(struct sdshdr8)+len+1);
+    /* o + 1 表示将内存地址从变量o开始移动一段距离，而移动的距离等于redisObject这个结构体的大小 */
     struct sdshdr8 *sh = (void*)(o+1);
 
     o->type = OBJ_STRING;
     o->encoding = OBJ_ENCODING_EMBSTR;
+    /* 把redisObject中的指针ptr指向SDS结构体中的字符数组 */
     o->ptr = sh+1;
     o->refcount = 1;
     if (server.maxmemory_policy & MAXMEMORY_FLAG_LFU) {
@@ -104,6 +107,7 @@ robj *createEmbeddedStringObject(const char *ptr, size_t len) {
     if (ptr == SDS_NOINIT)
         sh->buf[len] = '\0';
     else if (ptr) {
+        /* 把参数中传入的指针ptr指向的字符串，拷贝到SDS结构体中的字符数组，并在数组最后添加结束字符 */
         memcpy(sh->buf,ptr,len);
         sh->buf[len] = '\0';
     } else {
@@ -121,8 +125,16 @@ robj *createEmbeddedStringObject(const char *ptr, size_t len) {
 #define OBJ_ENCODING_EMBSTR_SIZE_LIMIT 44
 robj *createStringObject(const char *ptr, size_t len) {
     if (len <= OBJ_ENCODING_EMBSTR_SIZE_LIMIT)
+    /*
+        创建嵌入式字符串会使用一块连续的内存空间，来同时保存redisObject和SDS结构。
+        这样内存分配只有一次，同时也避免了内存碎片
+    */
         return createEmbeddedStringObject(ptr,len);
     else
+    /* 
+        创建普通字符串时，redis需要分别给redisObject和SDS分别分配一次内存，
+        这样既带来了内存分配开销，同时也会导致内存碎片
+     */
         return createRawStringObject(ptr,len);
 }
 

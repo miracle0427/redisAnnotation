@@ -236,12 +236,10 @@
  * determined without scanning the whole ziplist. */
 #define ZIPLIST_LENGTH(zl)      (*((uint16_t*)((zl)+sizeof(uint32_t)*2)))
 
-/* The size of a ziplist header: two 32 bit integers for the total
- * bytes count and last item offset. One 16 bit integer for the number
- * of items field. */
+/* 压缩列表头的大小：2个32bit的整数表示总字节数和最后一项的偏移，1个16bit整数表示元素数量 */
 #define ZIPLIST_HEADER_SIZE     (sizeof(uint32_t)*2+sizeof(uint16_t))
 
-/* Size of the "end of ziplist" entry. Just one byte. */
+/* 压缩列表尾项的大小，只有一个字节，表示列表结束 */
 #define ZIPLIST_END_SIZE        (sizeof(uint8_t))
 
 /* Return the pointer to the first entry of a ziplist. */
@@ -330,6 +328,7 @@ unsigned int zipIntSize(unsigned char encoding) {
  * The function returns the number of bytes used by the encoding/length
  * header stored in 'p'. */
 unsigned int zipStoreEntryEncoding(unsigned char *p, unsigned char encoding, unsigned int rawlen) {
+    /* 默认编码结果是1字节 */
     unsigned char len = 1, buf[5];
 
     if (ZIP_IS_STR(encoding)) {
@@ -396,10 +395,13 @@ unsigned int zipStoreEntryEncoding(unsigned char *p, unsigned char encoding, uns
  * uses the larger encoding (required in __ziplistCascadeUpdate). */
 int zipStorePrevEntryLengthLarge(unsigned char *p, unsigned int len) {
     if (p != NULL) {
+        /* 将prevlen的第1字节设置为ZIP_BIG_PREVLEN，即254 */
         p[0] = ZIP_BIG_PREVLEN;
+        /* 将前一个列表项的长度值拷贝至prevlen的第2至第5字节，其中sizeof(len)的值为4 */
         memcpy(p+1,&len,sizeof(len));
         memrev32ifbe(p+1);
     }
+    /* 返回prevlen的大小，为5字节 */
     return 1+sizeof(len);
 }
 
@@ -410,6 +412,7 @@ unsigned int zipStorePrevEntryLength(unsigned char *p, unsigned int len) {
         return (len < ZIP_BIG_PREVLEN) ? 1 : sizeof(len)+1;
     } else {
         if (len < ZIP_BIG_PREVLEN) {
+            /* 如果小于254字节，那么prevlen就使用1字节表示 */
             p[0] = len;
             return 1;
         } else {
@@ -574,13 +577,19 @@ void zipEntry(unsigned char *p, zlentry *e) {
     e->p = p;
 }
 
-/* Create a new empty ziplist. */
+/* 
+    ziplistNew函数的逻辑很简单，就是创建一块连续的内存空间
+    大小为ZIPLIST_HEADER_SIZE+ZIPLIST_END_SIZE，然后再把
+    该连续空间的最后一个字节赋值为ZIP_END，表示列表结束
+ */
 unsigned char *ziplistNew(void) {
+    /* 初始分配大小 */
     unsigned int bytes = ZIPLIST_HEADER_SIZE+ZIPLIST_END_SIZE;
     unsigned char *zl = zmalloc(bytes);
     ZIPLIST_BYTES(zl) = intrev32ifbe(bytes);
     ZIPLIST_TAIL_OFFSET(zl) = intrev32ifbe(ZIPLIST_HEADER_SIZE);
     ZIPLIST_LENGTH(zl) = 0;
+    /* 将列表尾设置为ZIP_END */
     zl[bytes-1] = ZIP_END;
     return zl;
 }
@@ -772,6 +781,7 @@ unsigned char *__ziplistInsert(unsigned char *zl, unsigned char *p, unsigned cha
     }
     /* We need space for both the length of the previous entry and
      * the length of the payload. */
+    /* 针对不同长度的数据，使用不同大小的元数据信息，这种方法可以有效的节省内存开销 */
     reqlen += zipStorePrevEntryLength(NULL,prevlen);
     reqlen += zipStoreEntryEncoding(NULL,encoding,slen);
 

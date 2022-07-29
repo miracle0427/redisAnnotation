@@ -35,7 +35,7 @@
 typedef struct intset {
     uint32_t encoding;
     uint32_t length;
-    int8_t contents[];
+    int8_t contents[]; /* 整数集合是一块连续的内存空间，这样避免了内存碎片，提升了内存使用效率 */
 } intset;
 
 intset *intsetNew(void);
