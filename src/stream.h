@@ -4,20 +4,20 @@
 #include "rax.h"
 #include "listpack.h"
 
-/* Stream item ID: a 128 bit number composed of a milliseconds time and
- * a sequence counter. IDs generated in the same millisecond (or in a past
- * millisecond if the clock jumped backward) will use the millisecond time
- * of the latest generated ID and an incremented sequence. */
+/* 
+ * 流条目ID：一个由毫秒时间和序列计数器组成的128位数字。
+ * 在同一毫秒内产生的ID（或者在过去的毫秒内，如果时钟向后跳动）将使用最新产生的ID的毫秒时间和一个递增的序列。
+ * */
 typedef struct streamID {
     uint64_t ms;        /* Unix time in milliseconds. */
     uint64_t seq;       /* Sequence number. */
 } streamID;
 
 typedef struct stream {
-    rax *rax;               /* The radix tree holding the stream. */
-    uint64_t length;        /* Number of elements inside this stream. */
-    streamID last_id;       /* Zero if there are yet no items. */
-    rax *cgroups;           /* Consumer groups dictionary: name -> streamCG */
+    rax *rax;               /* 保存消息的radix tree */
+    uint64_t length;        /* 消息流中的消息个数 */
+    streamID last_id;       /* 当前消息流中最后插入的消息的ID，如果没有条目则为0 */
+    rax *cgroups;           /* 当前消息流的消费组信息，也是用radix tree保存 Consumer groups dictionary: name -> streamCG */
 } stream;
 
 /* We define an iterator to iterate stream items in an abstract way, without

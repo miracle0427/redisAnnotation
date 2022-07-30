@@ -33,12 +33,10 @@
 
 #include <stdint.h>
 
-/* Representation of a radix tree as implemented in this file, that contains
- * the strings "foo", "foobar" and "footer" after the insertion of each
- * word. When the node represents a key inside the radix tree, we write it
- * between [], otherwise it is written between ().
+/* 本文件实现了当插入foo、foobar、footer字符串之后基数树的表示。
+ * 当节点表示基数树的key，将其写在[]里，否则写在()里
  *
- * This is the vanilla representation:
+ * 这是普通的表示:
  *
  *              (f) ""
  *                \
@@ -54,12 +52,9 @@
  *              /             \
  *    "footer" []             [] "foobar"
  *
- * However, this implementation implements a very common optimization where
- * successive nodes having a single child are "compressed" into the node
- * itself as a string of characters, each representing a next-level child,
- * and only the link to the node representing the last character node is
- * provided inside the representation. So the above representation is turend
- * into:
+ * 
+ * 然而，这种实现方式实现了一个非常常见的优化，即拥有一个子节点的连续节点被 "压缩 "成节点本身的一串字符，
+ * 每个字符代表一个下一级的子节点，而在表示法里面只提供代表最后一个字符节点的链接。所以上述表示变为：
  *
  *                  ["foo"] ""
  *                     |
@@ -69,12 +64,9 @@
  *                 /          \
  *       "footer" []          [] "foobar"
  *
- * However this optimization makes the implementation a bit more complex.
- * For instance if a key "first" is added in the above radix tree, a
- * "node splitting" operation is needed, since the "foo" prefix is no longer
- * composed of nodes having a single child one after the other. This is the
- * above tree and the resulting node splitting after this event happens:
- *
+ * 然而，这种优化使得实现起来更加复杂。例如，如果在上述基数树中添加一个键 "first"，
+ * 就需要进行一个 "节点拆分 "操作，因为 "foo "前缀不再是由一个接一个的子节点组成。
+ * 这就是上面的树和事件发生后的节点拆分情况。
  *
  *                    (f) ""
  *                    /
@@ -88,18 +80,34 @@
  *                    /          \
  *          "footer" []          [] "foobar"
  *
- * Similarly after deletion, if a new chain of nodes having a single child
- * is created (the chain must also not include nodes that represent keys),
- * it must be compressed back into a single node.
+ * 同样地，在删除之后，如果创建了一个新的具有单个子节点的节点链（该链也必须不包括代表键的节点），
+ * 它必须被压缩回一个单一的节点。
  *
  */
 
 #define RAX_NODE_MAX_SIZE ((1<<29)-1)
 typedef struct raxNode {
-    uint32_t iskey:1;     /* Does this node contain a key? */
-    uint32_t isnull:1;    /* Associated value is NULL (don't store it). */
-    uint32_t iscompr:1;   /* Node is compressed. */
-    uint32_t size:29;     /* Number of children, or compressed string len. */
+    /* 
+        iskey表示从Radix Tree的根节点到当前节点路径上的字符组成的字符串,
+        是否表示了一个完整的key.如果是的话，那么iskey的值为1。否则，iskey的值为0。
+        注意，当前节点所表示的key,并不包含该节点自身的内容。
+     */
+    uint32_t iskey:1;
+    /*
+        isnull表示当前节点是否为空节点。如果当前节点是空节点，那么该节点就不需要为指向
+        value的指针分配内存空间了。
+    */
+    uint32_t isnull:1;
+    /*
+        iscompr表示当前节点是压缩节点还是非压缩节点。
+    */
+    uint32_t iscompr:1;
+    /*
+        size表示当前节点的大小，具体值会根据节点是压缩节点还是非压缩节点而不同。
+        如果当前节点是压缩节点，该值表示压缩数据的长度;
+        如果是非压缩节点,该值表示该节点指向的子节点个数。
+    */
+    uint32_t size:29;
     /* Data layout is as follows:
      *
      * If node is not compressed we have 'size' bytes, one for each children
@@ -127,6 +135,10 @@ typedef struct raxNode {
      * children, an additional value pointer is present (as you can see
      * in the representation above as "value-ptr" field).
      */
+    /*
+        对于非压缩节点来说，data数组包括子节点对应的字符、指向子节点的指针，以及节点表示key时对应的value指针;
+        对于压缩节点来说，data数组包括子节点对应的合并字符串、指向子节点的指针,以及节点为key时的value指针。
+    */
     unsigned char data[];
 } raxNode;
 
