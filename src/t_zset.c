@@ -115,10 +115,10 @@ void zslFree(zskiplist *zsl) {
     zfree(zsl);
 }
 
-/* Returns a random level for the new skiplist node we are going to create.
- * The return value of this function is between 1 and ZSKIPLIST_MAXLEVEL
- * (both inclusive), with a powerlaw-alike distribution where higher
- * levels are less likely to be returned. */
+/*
+ * 对我们将要创建的跳表结点返回一个随机层次，这个函数的返回值的范围是[1, ZSKIPLIST_MAXLEVEL]，
+ * 类似指数定律，返回更高层次的可能性更小
+ * */
 int zslRandomLevel(void) {
     int level = 1;
     while ((random()&0xFFFF) < (ZSKIPLIST_P * 0xFFFF))
@@ -1181,7 +1181,7 @@ void zsetConvert(robj *zobj, int encoding) {
 
         if (encoding != OBJ_ENCODING_SKIPLIST)
             serverPanic("Unknown target encoding");
-
+        /* 同时创建跳表和哈希表 */
         zs = zmalloc(sizeof(*zs));
         zs->dict = dictCreate(&zsetDictType,NULL);
         zs->zsl = zslCreate();
@@ -1371,7 +1371,7 @@ int zsetAdd(robj *zobj, double score, sds ele, int *flags, double *newscore) {
         zset *zs = zobj->ptr;
         zskiplistNode *znode;
         dictEntry *de;
-
+        /* 判断在hash表中是否存在 */
         de = dictFind(zs->dict,ele);
         if (de != NULL) {
             /* NX? Return, same element already exists. */
@@ -1403,6 +1403,7 @@ int zsetAdd(robj *zobj, double score, sds ele, int *flags, double *newscore) {
             return 1;
         } else if (!xx) {
             ele = sdsdup(ele);
+            /* 如果不存在则同时插入跳表和哈希表中 */
             znode = zslInsert(zs->zsl,score,ele);
             serverAssert(dictAdd(zs->dict,ele,&znode->score) == DICT_OK);
             *flags |= ZADD_ADDED;
