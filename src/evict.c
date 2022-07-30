@@ -320,28 +320,50 @@ unsigned long LFUTimeElapsed(unsigned long ldt) {
     return 65535-ldt+now;
 }
 
-/* Logarithmically increment a counter. The greater is the current counter value
- * the less likely is that it gets really implemented. Saturate it at 255. */
+/* 以对数方式递增一个计数器。当前计数器的值越大，它就越不可能得到真正的执行。在255处将其饱和。 */
 uint8_t LFULogIncr(uint8_t counter) {
     if (counter == 255) return 255;
     double r = (double)rand()/RAND_MAX;
     double baseval = counter - LFU_INIT_VAL;
     if (baseval < 0) baseval = 0;
+    /* 
+        因为概率值r是随机定的，所以，阈值p的大小就决定了访问次数增加的难度。
+        如果阈值p越小，概率值r<p的可能性也越小，访问次数也越难增加;
+        如果阈值p越大，概率值r<p的可能性就越大，访问次数就越容易增加。
+
+        而阈值p的值大小，是由两个因素决定的。
+        一个是当前访问次数和宏定义LFU_INIT_VAL的差值baseval,
+        一个是redis.conf文件中定义的配置项lfu_log_factor。
+        当计算阈值p时，把baseval和lfu-log-factor乘积后，加上1,然后再取其倒数。
+        所以，baseval 或者lfu_log_factor 越大，那么其倒数就越小，也就是阈值p就越小;
+        反之,阈值p就越大。
+        这里其实就对应了两种影响因素。
+        baseval :这反映了当前访问次数的多少。访问次数越多的键值对，它的访问次数再增加的难度就会越大;
+        lfu_log_factor:这是可以被设置的。提供了让我们人为调节访问次数增加难度的方法。
+    */
     double p = 1.0/(baseval*server.lfu_log_factor+1);
     if (r < p) counter++;
     return counter;
 }
 
-/* If the object decrement time is reached decrement the LFU counter but
- * do not update LFU fields of the object, we update the access time
- * and counter in an explicit way when the object is really accessed.
- * And we will times halve the counter according to the times of
- * elapsed time than server.lfu_decay_time.
- * Return the object frequency counter.
- *
- * This function is used in order to scan the dataset for the best object
- * to fit: as we check for the candidate, we incrementally decrement the
- * counter of the scanned objects if needed. */
+/* 
+ * 
+ * 如果达到了对象的递减时间，则递减LFU计数器，但不更新对象的LFU字段，
+ * 当对象被真正访问时，我们以明确的方式更新访问时间和计数器。
+ * 并且我们将根据 运行时间/server.lfu_decay_time 的比值将记数值递减。
+ * 返回对象的频率计数器
+ * 
+ * 这个函数用于扫描数据集，以寻找最佳的拟合对象：
+ * 当我们检查候选对象时，如果需要，我们会递减所扫描对象的计数器。
+ * 
+ * lfu_decay_time变量值,由redis.conf文件中的配置项lfu_decay_time来决定的。
+ * Redis在初始化时，会通过initServerConfig 函数来设置lfu_decay_time的值，默认值为1。
+ * 所以，在默认情况下，访问次数的衰减大小就是等于上一次访问距离当前的分钟数。
+ * 
+ * 比如，假设上一次访问是10分钟前，那么在默认情况下，访问次数的衰减大小就等于10。
+ * 当然，如果上一次访问距离当前的分钟数,已经超过访问次数的值了，那么访问次数就会被设
+ * 置为0,这就表示键值对已经很长时间没有被访问了。
+ * */
 unsigned long LFUDecrAndReturn(robj *o) {
     unsigned long ldt = o->lru >> 8;
     unsigned long counter = o->lru & 255;

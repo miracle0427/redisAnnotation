@@ -51,6 +51,7 @@ robj *createObject(int type, void *ptr) {
         一个键值对的LRU时钟值最初是在这个键值对被创建的时候，进行初始化设置的 
     */
     if (server.maxmemory_policy & MAXMEMORY_FLAG_LFU) {
+        /* 使用LFU算法时，lru变量包括以分钟为精度的UNIX时间戳和访问次数 */
         o->lru = (LFUGetTimeInMinutes()<<8) | LFU_INIT_VAL;
     } else {
         o->lru = LRU_CLOCK();

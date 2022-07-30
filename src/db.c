@@ -42,10 +42,15 @@ int keyIsExpired(redisDb *db, robj *key);
 
 /* Update LFU when an object is accessed.
  * Firstly, decrement the counter if the decrement time is reached.
- * Then logarithmically increment the counter, and update the access time. */
+ * Then logarithmically increment the counter, and update the access time. 
+ * 访问次数按时间衰减和访问次数按概率增加，是一个不错的参考范例
+ * */
 void updateLFU(robj *val) {
+    /* 第一步，根据距离上次访问的时长，衰减访问次数 */
     unsigned long counter = LFUDecrAndReturn(val);
+    /* 第二步，根据当前访问更新访问次数 */
     counter = LFULogIncr(counter);
+    /* 第三步，更新lru变量值 */
     val->lru = (LFUGetTimeInMinutes()<<8) | counter;
 }
 
