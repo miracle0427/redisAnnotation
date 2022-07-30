@@ -4134,6 +4134,11 @@ int main(int argc, char **argv) {
 #ifdef INIT_SETPROCTITLE_REPLACEMENT
     spt_init(argc, argv);
 #endif
+    /*
+        阶段一:基本初始化
+        在这个阶段，main函数主要是完成一些基本的初始化工作,包括设置server运行的时区、
+        设置哈希函数的随机种子等。
+    */
     setlocale(LC_COLLATE,"");
     tzset(); /* Populates 'timezone' global. */
     zmalloc_set_oom_handler(redisOutOfMemoryHandler);
@@ -4144,6 +4149,7 @@ int main(int argc, char **argv) {
     getRandomHexChars(hashseed,sizeof(hashseed));
     dictSetHashFunctionSeed((uint8_t*)hashseed);
     server.sentinel_mode = checkForSentinelMode(argc,argv);
+    /* 第一轮赋值：为各种参数设置默认值 */
     initServerConfig();
     moduleInitModulesSystem();
 
@@ -4157,6 +4163,12 @@ int main(int argc, char **argv) {
     /* We need to init sentinel right now as parsing the configuration file
      * in sentinel mode will have the effect of populating the sentinel
      * data structures with master nodes to monitor. */
+    /*
+        阶段二:检查哨兵模式，并检查是否要执行RDB检测或AOF检测
+        Redis server启动后，可能是以哨兵模式运行的，而哨兵模式运行的server在参数初始化、
+        参数设置，以及server启动过程中要执行的操作等方面，与普通模式server有所差别。所
+        以，main函数在执行过程中需要根据Redis配置的参数，检查是否设置了哨兵模式。
+    */
     if (server.sentinel_mode) {
         initSentinelConfig();
         initSentinel();
@@ -4169,7 +4181,12 @@ int main(int argc, char **argv) {
         redis_check_rdb_main(argc,argv,NULL);
     else if (strstr(argv[0],"redis-check-aof") != NULL)
         redis_check_aof_main(argc,argv);
-
+    /*
+        阶段三：运行参数解析
+        在这一阶段，main 函数会对命令行传入的参数进行解析,并且调用loadServerConfig函数，
+        对命令行参数和配置文件中的参数进行合并处理，然后为Redis各功能模块的关键参数设置
+        合适的取值，以便server能高效地运行。
+    */
     if (argc >= 2) {
         j = 1; /* First option to parse in argv[] */
         sds options = sdsempty();
@@ -4232,6 +4249,17 @@ int main(int argc, char **argv) {
             exit(1);
         }
         resetServerSaveParams();
+        /* 
+            第二、三轮赋值：命令行和配置文件赋值
+            loadServerConfig是以Redis配置文件和命令行参数的解析字符串为参数，
+            将配置文件中的所有配置项读取出来,形成字符串。紧接着，loadServerConfig 
+            函数会把解析后的命令行参数,追加到配置文件形成的配置项字符串。
+
+            这样一来,配置项字符串就同时包含了配置文件中设置的参数,以及命令行设置的参数。
+            最后，loadServerConfig函数会进一步调用loadServerConfigFromString函数,对配置
+            项字符串中的每一个配置项进行匹配。一旦匹配成功，loadServerConfigFromString 函数就
+            会按照配置项的值设置server的参数。
+        */
         loadServerConfig(configfile,options);
         sdsfree(options);
     }
@@ -4254,7 +4282,15 @@ int main(int argc, char **argv) {
     server.supervised = redisIsSupervised(server.supervised_mode);
     int background = server.daemonize && !server.supervised;
     if (background) daemonize();
+    /*
+        阶段四:初始化server
+        调用initServer函数，对server运行时的各种资源进行初始化工作。
+        这主要包括了server资源管理所需的数据结构初始化、键值对数据库初始化、server 网络框架初始化等。
 
+        在调用完initServer后，main 函数还会再次判断当前server是否为哨兵模式。如果是哨兵模式，
+        main函数会调用sentinelIsRunning函数，设置启动哨兵模式。否则的话，main函数会调用
+        loadDataFromDisk函数,从磁盘上加载AOF或者是RDB文件，以便恢复之前的数据。
+    */
     initServer();
     if (background || server.pidfile) createPidFile();
     redisSetProcTitle(argv[0]);
@@ -4294,6 +4330,11 @@ int main(int argc, char **argv) {
 
     aeSetBeforeSleepProc(server.el,beforeSleep);
     aeSetAfterSleepProc(server.el,afterSleep);
+    /*
+        阶段五:执行事件驱动框架
+        为了能高效处理高并发的客户端连接请求，Redis 采用了事件驱动框架，来并发处理不同客户
+        端的连接和读写请求。
+    */
     aeMain(server.el);
     aeDeleteEventLoop(server.el);
     return 0;
