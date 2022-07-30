@@ -367,6 +367,7 @@ void incrRefCount(robj *o) {
 }
 
 void decrRefCount(robj *o) {
+    /* 当引用计数为1，调用具体类型的释放函数来释放内存空间 */
     if (o->refcount == 1) {
         switch(o->type) {
         case OBJ_STRING: freeStringObject(o); break;

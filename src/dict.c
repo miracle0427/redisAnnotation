@@ -386,6 +386,7 @@ static dictEntry *dictGenericDelete(dict *d, const void *key, int nofree) {
                     prevHe->next = he->next;
                 else
                     d->ht[table].table[idx] = he->next;
+                /* 根据nofree参数来决定执行的是同步删除还是异步删除 */
                 if (!nofree) {
                     dictFreeKey(d, he);
                     dictFreeVal(d, he);

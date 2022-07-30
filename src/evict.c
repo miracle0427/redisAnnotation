@@ -613,8 +613,16 @@ int freeMemoryIfNeeded(void) {
              *
              * AOF and Output buffer memory will be freed eventually so
              * we only care about memory used by the key space. */
-            delta = (long long) zmalloc_used_memory();
+            delta = (long long) zmalloc_used_memory();  /* 获取当前内存使用量 */
             latencyStartMonitor(eviction_latency);
+            /*
+                删除操作包括了两步子操作。
+                    子操作一:将被淘汰的键值对从哈希表中去除，这里的哈希表既可能是设置了过期key的哈希表，也可能是全局哈希表。
+                    子操作二:释放被淘汰键值对所占用的内存空间。
+
+                如果这两个子操作一起做，那么就是同步删除;如果只做了子操作一，子操作二由后台线程来执行，那么就是异步删除。
+
+            */
             if (server.lazyfree_lazy_eviction)
                 dbAsyncDelete(db,keyobj);
             else
@@ -622,8 +630,8 @@ int freeMemoryIfNeeded(void) {
             latencyEndMonitor(eviction_latency);
             latencyAddSampleIfNeeded("eviction-del",eviction_latency);
             latencyRemoveNestedEvent(latency,eviction_latency);
-            delta -= (long long) zmalloc_used_memory();
-            mem_freed += delta;
+            delta -= (long long) zmalloc_used_memory(); /* 根据当前内存使用量计算数据删除前后释放的内存 */
+            mem_freed += delta; /* 更新已释放的内存里 */
             server.stat_evictedkeys++;
             notifyKeyspaceEvent(NOTIFY_EVICTED, "evicted",
                 keyobj, db->id);

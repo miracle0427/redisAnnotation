@@ -1110,15 +1110,28 @@ long long getExpire(redisDb *db, robj *key) {
     return dictGetSignedIntegerVal(de);
 }
 
-/* Propagate expires into slaves and the AOF file.
- * When a key expires in the master, a DEL operation for this key is sent
- * to all the slaves and the AOF file if enabled.
- *
- * This way the key expiry is centralized in one place, and since both
- * AOF and the master->slave link guarantee operation ordering, everything
- * will be consistent even if we allow write operations against expiring
- * keys. */
+/* 
+ * 将过期信息传播到从节点和AOF文件中。
+ * 当主节点中的一个key过期时，针对这个key的DEL操作将发送给所有的从节点和AOF文件(如果启动了)
+ * 这样，key过期就集中在一个地方，而且由于AOF和master->slave链路都保证了操作的有序性，
+ * 即使我们允许对过期的key进行写操作，一切也都是一致的。
+ * */
 void propagateExpire(redisDb *db, robj *key, int lazy) {
+    /*
+        创建一个redisObject结构体数组，该数组的第一个元素是删除操作对应的命令对象，
+        而第二个元素是被删除的key对象。
+
+        因为Redis server可能针对缓存淘汰场景启用了惰性删除，所以, propagateExpire函数会
+        根据全局变量server的lazyfree_lazy_eviction成员变量的值，来决定删除操作具体对应的
+        是哪个命令。
+
+        如果lazyfree_lazy_eviction被设置为1,也就是启用了缓存淘汰时的惰性删除,那么，删除
+        操作对应的命令就是UNLINK;否则的话，命令就是DEL。因为这些命令会被经常使用，所以
+        Redis源码中会为这些命令创建共享对象。
+        
+        这些共享对象的数据结构是sharedObjectsStruct结构体,并用一个全局变量shared来表示。
+        在该结构体中包含了指向共享对象的指针，这其中就包括了unlink和del命令对象。
+    */
     robj *argv[2];
 
     argv[0] = lazy ? shared.unlink : shared.del;
