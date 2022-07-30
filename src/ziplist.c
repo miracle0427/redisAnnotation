@@ -748,8 +748,14 @@ unsigned char *__ziplistDelete(unsigned char *zl, unsigned char *p, unsigned int
     return zl;
 }
 
-/* Insert item at "p". */
+/* 
+    zl指向ziplist
+    p指向ziplist中的entry
+    s指向待插入的内容
+    slen是s指向的内容的长度
+*/
 unsigned char *__ziplistInsert(unsigned char *zl, unsigned char *p, unsigned char *s, unsigned int slen) {
+    // 获得当前ziplist长度curlen，reqlen用于记录插入元素后所需的新增空间大小
     size_t curlen = intrev32ifbe(ZIPLIST_BYTES(zl)), reqlen;
     unsigned int prevlensize, prevlen = 0;
     size_t offset;
@@ -760,7 +766,7 @@ unsigned char *__ziplistInsert(unsigned char *zl, unsigned char *p, unsigned cha
                                     we use it uninitialized. */
     zlentry tail;
 
-    /* Find out prevlen for the entry that is inserted. */
+    /* 判断当前要插入的位置是否是列表末尾。如果不是末尾，那么就需要获取位于当前插入位置的元素prevlen和prevlensize */
     if (p[0] != ZIP_END) {
         ZIP_DECODE_PREVLEN(p, prevlensize, prevlen);
     } else {
@@ -769,7 +775,13 @@ unsigned char *__ziplistInsert(unsigned char *zl, unsigned char *p, unsigned cha
             prevlen = zipRawEntryLength(ptail);
         }
     }
-
+    /* 
+        第一步，计算实际插入元素的长度 
+        这个计算过程和插入元素是整数还是字符串有关。会先调用zipTryEncoding函数，
+        这个函数会判断插入元素是否为整数。如果是整数,就按照不同的整数大小，
+        计算encoding和实际数据data各自所需的空间;如果是字符串，那么就先把字符串长度记录
+        为所需的新增空间大小。
+    */
     /* See if the entry can be encoded */
     if (zipTryEncoding(s,slen,&value,&encoding)) {
         /* 'encoding' is set to the appropriate integer encoding */
@@ -782,13 +794,17 @@ unsigned char *__ziplistInsert(unsigned char *zl, unsigned char *p, unsigned cha
     /* We need space for both the length of the previous entry and
      * the length of the payload. */
     /* 针对不同长度的数据，使用不同大小的元数据信息，这种方法可以有效的节省内存开销 */
+    /* 第二步，将插入位置元素的prevlen也计算到所需空间中 */
     reqlen += zipStorePrevEntryLength(NULL,prevlen);
+
+    /* 第三步，根据字符串长度计算相应encoding的大小 */
     reqlen += zipStoreEntryEncoding(NULL,encoding,slen);
 
     /* When the insert position is not equal to the tail, we need to
      * make sure that the next entry can hold this entry's length in
      * its prevlen field. */
     int forcelarge = 0;
+    /* 第四步，判断插入位置元素的prevlen和实际所需的prevlen，两者的大小差别 */
     nextdiff = (p[0] != ZIP_END) ? zipPrevLenByteDiff(p,reqlen) : 0;
     if (nextdiff == -4 && reqlen < 4) {
         nextdiff = 0;
@@ -797,6 +813,12 @@ unsigned char *__ziplistInsert(unsigned char *zl, unsigned char *p, unsigned cha
 
     /* Store offset because a realloc may change the address of zl. */
     offset = p-zl;
+    /* 
+        如果nextdiff>0表明插入位置元素的空间不够，需要新增nextdiff大小的空间
+        curlen：ziplist现有大小
+        reqlen：待插入元素自身所需的新增空间
+        nextdiff：插入位置元素prevlen所需的新增空间
+     */
     zl = ziplistResize(zl,curlen+reqlen+nextdiff);
     p = zl+offset;
 
