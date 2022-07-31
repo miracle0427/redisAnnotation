@@ -449,6 +449,7 @@ void flushdbCommand(client *c) {
 /* FLUSHALL [ASYNC]
  *
  * Flushes the whole server data set. */
+/* 情况四：flushall 命令创建RDB文件 */
 void flushallCommand(client *c) {
     int flags;
 

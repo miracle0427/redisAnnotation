@@ -1038,20 +1038,20 @@ int rdbSaveKeyValuePair(rio *rdb, robj *key, robj *val, long long expiretime) {
     }
 
     /* Save type, key, value */
-    if (rdbSaveObjectType(rdb,val) == -1) return -1;
-    if (rdbSaveStringObject(rdb,key) == -1) return -1;
-    if (rdbSaveObject(rdb,val,key) == -1) return -1;
+    if (rdbSaveObjectType(rdb,val) == -1) return -1;    /* 写入键值对的类型标识 */
+    if (rdbSaveStringObject(rdb,key) == -1) return -1;  /* 写入键值对的key */
+    if (rdbSaveObject(rdb,val,key) == -1) return -1;    /* 写入键值对的value */
     return 1;
 }
 
 /* Save an AUX field. */
 ssize_t rdbSaveAuxField(rio *rdb, void *key, size_t keylen, void *val, size_t vallen) {
     ssize_t ret, len = 0;
-    if ((ret = rdbSaveType(rdb,RDB_OPCODE_AUX)) == -1) return -1;
+    if ((ret = rdbSaveType(rdb,RDB_OPCODE_AUX)) == -1) return -1;   /* 写入操作码 */
     len += ret;
-    if ((ret = rdbSaveRawString(rdb,key,keylen)) == -1) return -1;
+    if ((ret = rdbSaveRawString(rdb,key,keylen)) == -1) return -1;  /* 写入属性信息中的键 */
     len += ret;
-    if ((ret = rdbSaveRawString(rdb,val,vallen)) == -1) return -1;
+    if ((ret = rdbSaveRawString(rdb,val,vallen)) == -1) return -1;  /* 写入属性信息中的值 */
     len += ret;
     return len;
 }
@@ -1150,41 +1150,41 @@ int rdbSaveRio(rio *rdb, int *error, int flags, rdbSaveInfo *rsi) {
 
     if (server.rdb_checksum)
         rdb->update_cksum = rioGenericUpdateChecksum;
-    snprintf(magic,sizeof(magic),"REDIS%04d",RDB_VERSION);
-    if (rdbWriteRaw(rdb,magic,9) == -1) goto werr;
-    if (rdbSaveInfoAuxFields(rdb,flags,rsi) == -1) goto werr;
+    snprintf(magic,sizeof(magic),"REDIS%04d",RDB_VERSION);  /* 生成魔数magic */
+    if (rdbWriteRaw(rdb,magic,9) == -1) goto werr;      /* 将magic写入RDB文件 */
+    if (rdbSaveInfoAuxFields(rdb,flags,rsi) == -1) goto werr;   /* 写入属性值 */
     if (rdbSaveModulesAux(rdb, REDISMODULE_AUX_BEFORE_RDB) == -1) goto werr;
 
-    for (j = 0; j < server.dbnum; j++) {
+    for (j = 0; j < server.dbnum; j++) {    /* 生成文件的数据部分 */
         redisDb *db = server.db+j;
         dict *d = db->dict;
         if (dictSize(d) == 0) continue;
         di = dictGetSafeIterator(d);
 
         /* Write the SELECT DB opcode */
-        if (rdbSaveType(rdb,RDB_OPCODE_SELECTDB) == -1) goto werr;
-        if (rdbSaveLen(rdb,j) == -1) goto werr;
+        if (rdbSaveType(rdb,RDB_OPCODE_SELECTDB) == -1) goto werr;  /* 写入SELECTDB操作码 */
+        if (rdbSaveLen(rdb,j) == -1) goto werr; /* 写入当前数据库编号 */
 
         /* Write the RESIZE DB opcode. We trim the size to UINT32_MAX, which
          * is currently the largest type we are able to represent in RDB sizes.
          * However this does not limit the actual size of the DB to load since
          * these sizes are just hints to resize the hash tables. */
         uint64_t db_size, expires_size;
-        db_size = dictSize(db->dict);
-        expires_size = dictSize(db->expires);
-        if (rdbSaveType(rdb,RDB_OPCODE_RESIZEDB) == -1) goto werr;
-        if (rdbSaveLen(rdb,db_size) == -1) goto werr;
-        if (rdbSaveLen(rdb,expires_size) == -1) goto werr;
+        db_size = dictSize(db->dict);   /* 获取全局哈希表的大小 */
+        expires_size = dictSize(db->expires);   /* 获取过期key哈希表的大小 */
+        if (rdbSaveType(rdb,RDB_OPCODE_RESIZEDB) == -1) goto werr;  /* 写入RESIZEDB操作码 */
+        if (rdbSaveLen(rdb,db_size) == -1) goto werr;   /* 写入全局哈希表大小 */
+        if (rdbSaveLen(rdb,expires_size) == -1) goto werr;  /* 写入过期key哈希表大小 */
 
         /* Iterate this DB writing every entry */
-        while((de = dictNext(di)) != NULL) {
-            sds keystr = dictGetKey(de);
-            robj key, *o = dictGetVal(de);
+        while((de = dictNext(di)) != NULL) {    /* 读取数据库中的每一个键值对 */
+            sds keystr = dictGetKey(de);    /* 获取键值对的key */
+            robj key, *o = dictGetVal(de);  /* 获取键值对的value */
             long long expire;
 
-            initStaticStringObject(key,keystr);
-            expire = getExpire(db,&key);
-            if (rdbSaveKeyValuePair(rdb,&key,o,expire) == -1) goto werr;
+            initStaticStringObject(key,keystr); /* 为key生成string对象 */
+            expire = getExpire(db,&key);    /* 获取键值对的过期时间 */
+            if (rdbSaveKeyValuePair(rdb,&key,o,expire) == -1) goto werr;    /* 把key和value写入RDB文件 */
 
             /* When this RDB is produced as part of an AOF rewrite, move
              * accumulated diff from parent to child while rewriting in
@@ -1218,11 +1218,11 @@ int rdbSaveRio(rio *rdb, int *error, int flags, rdbSaveInfo *rsi) {
     if (rdbSaveModulesAux(rdb, REDISMODULE_AUX_AFTER_RDB) == -1) goto werr;
 
     /* EOF opcode */
-    if (rdbSaveType(rdb,RDB_OPCODE_EOF) == -1) goto werr;
+    if (rdbSaveType(rdb,RDB_OPCODE_EOF) == -1) goto werr;   /* 写入结束操作码 */
 
     /* CRC64 checksum. It will be zero if checksum computation is disabled, the
      * loading code skips the check in this case. */
-    cksum = rdb->cksum;
+    cksum = rdb->cksum;     /* 写入校验值 */
     memrev64ifbe(&cksum);
     if (rioWrite(rdb,&cksum,8) == 0) goto werr;
     return C_OK;
@@ -2451,7 +2451,7 @@ int rdbSaveToSlavesSockets(rdbSaveInfo *rsi) {
     }
     return C_OK; /* Unreached. */
 }
-
+/* 情况一：save命令，创建RDB文件 */
 void saveCommand(client *c) {
     if (server.rdb_child_pid != -1) {
         addReplyError(c,"Background save already in progress");
@@ -2466,6 +2466,7 @@ void saveCommand(client *c) {
     }
 }
 
+/* 情况二：bgsave命令，创建RDB文件 */
 /* BGSAVE [SCHEDULE] */
 void bgsaveCommand(client *c) {
     int schedule = 0;

@@ -1116,6 +1116,8 @@ void updateCachedTime(int update_daylight_info) {
 
     比如，serverCron 函数中会以1秒1次的频率,检查AOF文件是否有写错误。如果有的
     话，serverCron就会调用flushAppendOnlyFile函数,再次刷回AOF文件的缓存数据。
+
+    情况六：执行周期性任务时会创建RDB文件
 */
 int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     int j;
@@ -2847,7 +2849,7 @@ void closeListeningSockets(int unlink_unix_socket) {
         unlink(server.unixsocket); /* don't care if this fails */
     }
 }
-
+/* 情况五：正常关闭时创建RDB文件 */
 int prepareForShutdown(int flags) {
     int save = flags & SHUTDOWN_SAVE;
     int nosave = flags & SHUTDOWN_NOSAVE;
