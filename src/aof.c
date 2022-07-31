@@ -245,6 +245,12 @@ void stopAppendOnly(void) {
 
 /* Called when the user switches from "appendonly no" to "appendonly yes"
  * at runtime using the CONFIG command. */
+/*
+   startAppendOnly 函数会判断当前是否有RDB子进程在执行，如果有的话，
+   它会将AOF写设置为待调度执行。除此之外，如果startAppendOnly函数检测到
+   有AOF写子进程在执行，那么它就会把该子进程先kill掉,然后再调用
+   rewriteAppendOnlyFileBackground函数进行AOF重写。
+*/
 int startAppendOnly(void) {
     char cwd[MAXPATHLEN]; /* Current working dir path for error messages. */
     int newfd;
@@ -1296,6 +1302,11 @@ ssize_t aofReadDiffFromParent(void) {
     return total;
 }
 
+/*
+    rewriteAppendOnlyFileRio完成AOF日志文件的重写
+    具体来说，遍历redis server的每一个数据库，把其中的每个键值对读取出来，
+    然后记录该键值对类型对应的插入命令，以及键值对本身的内容
+*/
 int rewriteAppendOnlyFileRio(rio *aof) {
     dictIterator *di = NULL;
     dictEntry *de;
@@ -1566,6 +1577,14 @@ void aofClosePipes(void) {
  *    finally will rename(2) the temp file in the actual file name.
  *    The the new file is reopened as the new append only file. Profit!
  */
+/*
+    AOF重写和RDB创建是比较类似的,它们都会创建一个子进程来遍历所有的数据库，
+    并把数据库中的每个键值对记录到文件中。不过, AOF重写和RDB文件又有两个不同的地方:
+    1. AOF文件中是以“命令+键值对”的形式，来记录每个键值对的插入操作，而RDB文件记录的是键值对数据本身;
+    2. 在AOF重写或是创建RDB的过程中,主进程仍然可以接收客户端写请求。不过,因为RDB文件只需要记录
+        某个时刻下数据库的所有数据就行，而AOF写则需要尽可能地把主进程收到的写操作，也记录到重写的
+        日志文件中。所以，AOF写子进程就需要有相应的机制来和主进程进行通信,以此来接收主进程收到的写操作。
+*/
 int rewriteAppendOnlyFileBackground(void) {
     pid_t childpid;
     long long start;
@@ -1611,9 +1630,16 @@ int rewriteAppendOnlyFileBackground(void) {
         }
         serverLog(LL_NOTICE,
             "Background append only file rewriting started by pid %d",childpid);
+        /* 父进程将aof_rewrite_scheduled设置为0，同时记录AOF重写开始的时间，以及记录AOF子进程的进程号 */
         server.aof_rewrite_scheduled = 0;
         server.aof_rewrite_time_start = time(NULL);
         server.aof_child_pid = childpid;
+        /* 
+            禁止在AOF重写期间进行rehash操作，这是因为rehash操作会带来较多的数据移动操作,
+            对于AOF重写子进程来说，意味着父进程中的内存修改会比较多。因此, AOF重写
+            子进程就需要执行更多的写时复制，进而完成AOF文件的写入，这就会给Redis系统的性能
+            造成负面影响。
+        */
         updateDictResizePolicy();
         /* We set appendseldb to -1 in order to force the next call to the
          * feedAppendOnlyFile() to issue a SELECT command, so the differences
@@ -1626,12 +1652,14 @@ int rewriteAppendOnlyFileBackground(void) {
     return C_OK; /* unreached */
 }
 
+/* 情况一：执行bgrewriteaof命令手动触发aof重写 */
 void bgrewriteaofCommand(client *c) {
     if (server.aof_child_pid != -1) {
         addReplyError(c,"Background append only file rewriting already in progress");
     } else if (server.rdb_child_pid != -1) {
         server.aof_rewrite_scheduled = 1;
         addReplyStatus(c,"Background append only file rewriting scheduled");
+        /* 只有当前既没有AOF重写子进程也没有RDB子进程，才会重写 */
     } else if (rewriteAppendOnlyFileBackground() == C_OK) {
         addReplyStatus(c,"Background append only file rewriting started");
     } else {

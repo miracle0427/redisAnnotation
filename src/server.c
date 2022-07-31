@@ -1118,6 +1118,7 @@ void updateCachedTime(int update_daylight_info) {
     话，serverCron就会调用flushAppendOnlyFile函数,再次刷回AOF文件的缓存数据。
 
     情况六：执行周期性任务时会创建RDB文件
+    情况四：执行周期性任务时会判断是否进行AOF重写
 */
 int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     int j;
@@ -1248,6 +1249,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
 
     /* Start a scheduled AOF rewrite if this was requested by the user while
      * a BGSAVE was in progress. */
+    /* 如果没有RDB子进程和AOF子进程在执行，且AOF重写操作被设置为了待调度执行 */
     if (server.rdb_child_pid == -1 && server.aof_child_pid == -1 &&
         server.aof_rewrite_scheduled)
     {
@@ -1314,7 +1316,10 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
             }
         }
 
-        /* Trigger an AOF rewrite if needed. */
+        /* 
+            即使AOF重写操作没有被设置为待调度执行，也会周期性判断是否需要执行AOF重写 
+            可以通过设置 auto-aof-rewrite-percentage 和 auto-aof-rewrite-min-size 来调整重写频率
+        */
         if (server.aof_state == AOF_ON &&
             server.rdb_child_pid == -1 &&
             server.aof_child_pid == -1 &&

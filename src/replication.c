@@ -1120,6 +1120,12 @@ void replicationCreateMasterClient(int fd, int dbid) {
  * master-replica synchronization: if it fails after multiple attempts
  * the replica cannot be considered reliable and exists with an
  * error. */
+/*
+    情况三：在主从节点的复制过程中被调用。
+    当主从节点在进行复制时，如果从节点的AOF选项被打开,那么在加载解析RDB文件
+    时，AOF选项就会被关闭。然后,无论从节点是否成功加载了RDB文件,
+    restartAOFAfterSYNC函数都会被调用，来恢复被关闭的AOF功能。
+*/
 void restartAOFAfterSYNC() {
     unsigned int tries, max_tries = 10;
     for (tries = 0; tries < max_tries; ++tries) {

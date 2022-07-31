@@ -898,7 +898,10 @@ void loadServerConfig(char *filename, char *options) {
                !strcasecmp(c->argv[2]->ptr,_name2)) {
 
 #define config_set_else } else
-
+/* 
+    情况二：对应在redis中执行config命令启用AOF功能
+    config set appendonly yes
+ */
 void configSetCommand(client *c) {
     robj *o;
     long long ll;
