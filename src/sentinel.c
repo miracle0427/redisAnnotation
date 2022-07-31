@@ -161,12 +161,18 @@ typedef struct instanceLink {
                                    the link was down. */
 } instanceLink;
 
+/* 这是一个通用的结构体，不仅可以表示主节点，也可以表示从节点或者其他的哨兵实例 */
 typedef struct sentinelRedisInstance {
-    int flags;      /* See SRI_... defines */
-    char *name;     /* Master name from the point of view of this sentinel. */
-    char *runid;    /* Run ID of this instance, or unique ID if is a Sentinel.*/
-    uint64_t config_epoch;  /* Configuration epoch. */
-    sentinelAddr *addr; /* Master host. */
+    /*
+        flags可以设置为不同的值,从而表示不同类型的实例。比如，当flags设置为
+        SRI_MASTER、SRI_SLAVE或SRI_SENTINEL这三种宏定义时，就分别表示当前实例是
+        主节点、从节点或其他哨兵。
+    */
+    int flags;      /* 实例类型、状态的标记 */
+    char *name;     /* 从这个哨兵的视角中看到的主节点的名称 */
+    char *runid;    /* 这个实例的运行ID或唯一ID(如果是哨兵的话) */
+    uint64_t config_epoch;  /* 配置的纪元 */
+    sentinelAddr *addr; /* 主节点地址信息 */
     instanceLink *link; /* Link to the instance, may be shared for Sentinels. */
     mstime_t last_pub_time;   /* Last time we sent hello via Pub/Sub. */
     mstime_t last_hello_time; /* Only used if SRI_SENTINEL is set. Last time
@@ -174,8 +180,8 @@ typedef struct sentinelRedisInstance {
                                  via Pub/Sub. */
     mstime_t last_master_down_reply_time; /* Time of last reply to
                                              SENTINEL is-master-down command. */
-    mstime_t s_down_since_time; /* Subjectively down since time. */
-    mstime_t o_down_since_time; /* Objectively down since time. */
+    mstime_t s_down_since_time; /* 主观下线时长 */
+    mstime_t o_down_since_time; /* 客观下线时长 */
     mstime_t down_after_period; /* Consider it down after that period. */
     mstime_t info_refresh;  /* Time at which we received INFO output from it. */
     dict *renamed_commands;     /* Commands renamed in this instance:
@@ -193,8 +199,8 @@ typedef struct sentinelRedisInstance {
     mstime_t slave_conf_change_time; /* Last time slave master addr changed. */
 
     /* Master specific. */
-    dict *sentinels;    /* Other sentinels monitoring the same master. */
-    dict *slaves;       /* Slaves for this master instance. */
+    dict *sentinels;    /* 监听同一个主节点的其它哨兵实例 */
+    dict *slaves;       /* 主节点的从节点 */
     unsigned int quorum;/* Number of sentinels that need to agree on failure. */
     int parallel_syncs; /* How many slaves to reconfigure at same time. */
     char *auth_pass;    /* Password to use for AUTH against master & slaves. */
@@ -231,20 +237,16 @@ typedef struct sentinelRedisInstance {
 
 /* Main state. */
 struct sentinelState {
-    char myid[CONFIG_RUN_ID_SIZE+1]; /* This sentinel ID. */
-    uint64_t current_epoch;         /* Current epoch. */
-    dict *masters;      /* Dictionary of master sentinelRedisInstances.
-                           Key is the instance name, value is the
-                           sentinelRedisInstance structure pointer. */
-    int tilt;           /* Are we in TILT mode? */
-    int running_scripts;    /* Number of scripts in execution right now. */
-    mstime_t tilt_start_time;       /* When TITL started. */
-    mstime_t previous_time;         /* Last time we ran the time handler. */
-    list *scripts_queue;            /* Queue of user scripts to execute. */
-    char *announce_ip;  /* IP addr that is gossiped to other sentinels if
-                           not NULL. */
-    int announce_port;  /* Port that is gossiped to other sentinels if
-                           non zero. */
+    char myid[CONFIG_RUN_ID_SIZE+1]; /* 哨兵实例ID */
+    uint64_t current_epoch;         /* 当前纪元 */
+    dict *masters;      /* 监听的主节点的哈希表，key是实例名，值是sentinelRedisInstance结构体指针 */
+    int tilt;           /* 是否处于 TILT 模式 */
+    int running_scripts;    /* 运行的脚本个数 */
+    mstime_t tilt_start_time;       /* TITL 模式的起始时间 */
+    mstime_t previous_time;         /* 上一次执行时间处理函数的时间 */
+    list *scripts_queue;            /* 用于保存脚本的队列 */
+    char *announce_ip;  /* 向其他哨兵实例发送的IP信息 */
+    int announce_port;  /* 向其他哨兵实例发送的端口号 */
     unsigned long simfailure_flags; /* Failures simulation. */
     int deny_scripts_reconfig; /* Allow SENTINEL SET ... to change script
                                   paths at runtime? */
@@ -458,6 +460,10 @@ struct redisCommand sentinelcmds[] = {
 
 /* This function overwrites a few normal Redis config default with Sentinel
  * specific defaults. */
+/* 
+    将当前 server的端口号，改为哨兵实例专用的端口号
+    将protected_mode设置为0，即允许外部连接哨兵实例，而不是只能通过127.0.0.1本地连接server
+*/
 void initSentinelConfig(void) {
     server.port = REDIS_SENTINEL_PORT;
     server.protected_mode = 0; /* Sentinel must be exposed. */
@@ -469,6 +475,15 @@ void initSentinel(void) {
 
     /* Remove usual Redis commands from the command table, then just add
      * the SENTINEL command. */
+    /* 
+        在initServerConfig函数执行的时候，Redis server会初始化一个执行命令表, 并保存在全
+        局变量server的commands成员变量中。这个命令表本身是一个哈希表， 每个哈希项的键
+        对应了一个命令的名称,而值对应了该命令实际的实现函数。
+
+        因为哨兵实例是运行在特殊模式的Redis server,它执行的命令和Redis实例也是有区别
+        的，所以initSentinel函数会把server.commands对应的命令表清空，然后在其中添加哨兵
+        对应的命令
+     */
     dictEmpty(server.commands,NULL);
     for (j = 0; j < sizeof(sentinelcmds)/sizeof(sentinelcmds[0]); j++) {
         int retval;
@@ -479,6 +494,7 @@ void initSentinel(void) {
     }
 
     /* Initialize various data structures. */
+    /* 初始化哨兵实例用到的各种属性信息 */
     sentinel.current_epoch = 0;
     sentinel.masters = dictCreate(&instancesDictType,NULL);
     sentinel.tilt = 0;
@@ -496,6 +512,11 @@ void initSentinel(void) {
 /* This function gets called when the server is in Sentinel mode, started,
  * loaded the configuration, and is ready for normal operations. */
 void sentinelIsRunning(void) {
+    /*
+        首先确认哨兵实例的配置文件存在并且可以正常写入。然后，
+        检直哨兵实例是否设置了ID.如果没有设重1D的话，为哨兵实例随机生成一个ID.
+        最后，调用sentinelGenerateInitialMonitorEvents函数给每个被监听的主节点发送事件信息
+     */
     int j;
 
     if (server.configfile == NULL) {
@@ -601,6 +622,11 @@ int sentinelAddrIsEqual(sentinelAddr *a, sentinelAddr *b) {
  *
  *  Any other specifier after "%@" is processed by printf itself.
  */
+
+/*
+    参数level表示当前的日志级别，type 表示发送事件信息所用的订阅频道，
+    ri 表示对应交互的主节点，fmt 则表示发送的消息内容。
+*/
 void sentinelEvent(int level, char *type, sentinelRedisInstance *ri,
                    const char *fmt, ...) {
     va_list ap;
@@ -609,9 +635,10 @@ void sentinelEvent(int level, char *type, sentinelRedisInstance *ri,
 
     /* Handle %@ */
     if (fmt[0] == '%' && fmt[1] == '@') {
+        /* 判断实例的flags标签是否为SRI_MASTER，如果是，就表明实例是主节点 */
         sentinelRedisInstance *master = (ri->flags & SRI_MASTER) ?
                                          NULL : ri->master;
-
+        /* 如果当前实例是主节点，根据实例的名称、IP地址、端口号等信息调用snprintf生成传递的消息msg */
         if (master) {
             snprintf(msg, sizeof(msg), "%s %s %s %d @ %s %s %d",
                 sentinelRedisInstanceTypeStr(ri),
@@ -642,6 +669,7 @@ void sentinelEvent(int level, char *type, sentinelRedisInstance *ri,
     if (level != LL_DEBUG) {
         channel = createStringObject(type,strlen(type));
         payload = createStringObject(msg,strlen(msg));
+        /* 将消息发送到对应的频道 */
         pubsubPublishMessage(channel,payload);
         decrRefCount(channel);
         decrRefCount(payload);

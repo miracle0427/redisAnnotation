@@ -3940,8 +3940,12 @@ void setupSignalHandlers(void) {
 
 void memtest(size_t megabytes, int passes);
 
-/* Returns 1 if there is --sentinel among the arguments or if
- * argv[0] contains "redis-sentinel". */
+/* 
+    如果启动参数中有 --sentinel 或者启动命令为 redis-sentinel 返回1 
+    
+    对应了启动哨兵实例的两种方式：
+    一种是运行redis-sentinel命令，另一种是运行redis-server命令，但是带有 --sentinel参数
+*/
 int checkForSentinelMode(int argc, char **argv) {
     int j;
 
