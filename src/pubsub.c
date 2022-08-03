@@ -55,12 +55,14 @@ int clientSubscriptionsCount(client *c) {
 
 /* Subscribe a client to a channel. Returns 1 if the operation succeeded, or
  * 0 if the client was already subscribed to that channel. */
+/* 按照subcribe 执行时附带的频道名称来逐个订阅频道 */
 int pubsubSubscribeChannel(client *c, robj *channel) {
     dictEntry *de;
     list *clients = NULL;
     int retval = 0;
 
     /* Add the channel to the client -> channels hash table */
+    /* 把要订阅的频道加入到server记录的pubsub_channels中 */
     if (dictAdd(c->pubsub_channels,channel,NULL) == DICT_OK) {
         retval = 1;
         incrRefCount(channel);
@@ -73,6 +75,7 @@ int pubsubSubscribeChannel(client *c, robj *channel) {
         } else {
             clients = dictGetVal(de);
         }
+        /* 把执行subscribe命令的订阅者，加入到订阅者列表中 */
         listAddNodeTail(clients,c);
     }
     /* Notify the client */
@@ -221,7 +224,10 @@ int pubsubUnsubscribeAllPatterns(client *c, int notify) {
     return count;
 }
 
-/* Publish a message */
+/* 
+    查找要发布的频道，如果找到了，遍历这个channel对应的订阅者列表，
+    然后依次向每个订阅者发送要发布的消息。
+ */
 int pubsubPublishMessage(robj *channel, robj *message) {
     int receivers = 0;
     dictEntry *de;
@@ -315,6 +321,7 @@ void punsubscribeCommand(client *c) {
 }
 
 void publishCommand(client *c) {
+    /* 完成消息的实际发送，并返回接收消息的订阅者数量 */
     int receivers = pubsubPublishMessage(c->argv[1],c->argv[2]);
     if (server.cluster_enabled)
         clusterPropagatePublish(c->argv[1],c->argv[2]);

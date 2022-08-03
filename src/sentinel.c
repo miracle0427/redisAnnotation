@@ -626,9 +626,14 @@ int sentinelAddrIsEqual(sentinelAddr *a, sentinelAddr *b) {
 /*
     参数level表示当前的日志级别，type 表示发送事件信息所用的订阅频道，
     ri 表示对应交互的主节点，fmt 则表示发送的消息内容。
+
+    哨兵在使用发布订阅方法时，封装了sentinelEvent函数，用来发布消息
+    当我们要发布一条消息时，需要确定两方面的内容：一个是要发布的频道，另一个是要发布的消息
+    type表示要发布的频道，第四个参数fmt后面的省略号表示要发布的消息
 */
 void sentinelEvent(int level, char *type, sentinelRedisInstance *ri,
                    const char *fmt, ...) {
+    /* 指向可变参数的指针 */
     va_list ap;
     char msg[LOG_MAX_LEN];
     robj *channel, *payload;
@@ -656,8 +661,16 @@ void sentinelEvent(int level, char *type, sentinelRedisInstance *ri,
 
     /* Use vsprintf for the rest of the formatting if any. */
     if (fmt[0] != '\0') {
+        /* 
+            通过va_start宏来获取可变参数中的第一个参数
+         */
         va_start(ap, fmt);
+        /* 
+            按照fmt定义的格式，打印可变参数中的内容
+            vsnprintf函数会逐个获取可变参数中的每一个参数，并进行打印
+         */
         vsnprintf(msg+strlen(msg), sizeof(msg)-strlen(msg), fmt, ap);
+        /* 获取完所有参数后，调用va_end宏将刚才创建的ap指针关闭 */
         va_end(ap);
     }
 
@@ -697,6 +710,7 @@ void sentinelGenerateInitialMonitorEvents(void) {
     di = dictGetIterator(sentinel.masters);
     while((de = dictNext(di)) != NULL) {
         sentinelRedisInstance *ri = dictGetVal(de);
+        /* 哨兵初始化时，向 "+monitor"频道发布消息 */
         sentinelEvent(LL_WARNING,"+monitor",ri,"%@ quorum %d",ri->quorum);
     }
     dictReleaseIterator(di);
@@ -2077,8 +2091,10 @@ void sentinelReconnectInstance(sentinelRedisInstance *ri) {
                     sentinelDisconnectCallback);
             sentinelSendAuthIfNeeded(ri,link->pc);
             sentinelSetClientName(ri,link->pc,"pubsub");
-            /* Now we subscribe to the Sentinels "Hello" channel. */
+            /* Now we subscribe to the Sentinels "Hello" channel. */ 
+            /* 订阅hello 频道 */
             retval = redisAsyncCommand(link->pc,
+                /* 当收到hello频道的消息后，会回调sentinelReceiveHelloMessages函数来进行处理 */
                 sentinelReceiveHelloMessages, ri, "%s %s",
                 sentinelInstanceMapCommand(ri,"SUBSCRIBE"),
                 SENTINEL_HELLO_CHANNEL);
@@ -2449,10 +2465,15 @@ void sentinelPublishReplyCallback(redisAsyncContext *c, void *reply, void *privd
  *
  * If the master name specified in the message is not known, the message is
  * discarded. */
+/*
+    从hello消息中获得发布hello消息的哨兵实例的基本消息，比如IP、端口号、quorum阈值等
+    如果当前哨兵并没有记录发布hello消息的哨兵实例的信息，那么调用createSentinelRedisInstance
+    来创建发布hello消息的哨兵实例的信息记录，这样当前哨兵就拥有了其他哨兵实例的信息了。
+*/
 void sentinelProcessHelloMessage(char *hello, int hello_len) {
     /* Format is composed of 8 tokens:
      * 0=ip,1=port,2=runid,3=current_epoch,4=master_name,
-     * 5=master_ip,6=master_port,7=master_config_epoch. */
+     * 5=master_ip,6=master_port,7=master_config_epoch. */    
     int numtokens, port, removed, master_port;
     uint64_t current_epoch, master_config_epoch;
     char **token = sdssplitlen(hello, hello_len, ",", 1, &numtokens);
@@ -2616,6 +2637,12 @@ int sentinelSendHello(sentinelRedisInstance *ri) {
                     sentinel.announce_port : server.port;
 
     /* Format and send the Hello message. */
+    /* 
+        发布hello消息，包含了发布hello消息的哨兵实例的IP、端口号、ID和当前的纪元，
+        以及该哨兵监听的主节点的名称、IP、端口号和纪元信息 
+
+        和该哨兵监听同一个主节点的其他哨兵，也会订阅主节点的 hello频道，从而就可以获得该频道上的hello消息了
+    */
     snprintf(payload,sizeof(payload),
         "%s,%d,%s,%llu," /* Info about this sentinel. */
         "%s,%s,%d,%llu", /* Info about current master. */
@@ -2623,7 +2650,7 @@ int sentinelSendHello(sentinelRedisInstance *ri) {
         (unsigned long long) sentinel.current_epoch,
         /* --- */
         master->name,master_addr->ip,master_addr->port,
-        (unsigned long long) master->config_epoch);
+        (unsigned long long) master->config_epoch);    
     retval = redisAsyncCommand(ri->link->cc,
         sentinelPublishReplyCallback, ri, "%s %s %s",
         sentinelInstanceMapCommand(ri,"PUBLISH"),
@@ -3678,6 +3705,7 @@ void sentinelCheckSubjectivelyDown(sentinelRedisInstance *ri) {
     {
         /* Is subjectively down */
         if ((ri->flags & SRI_S_DOWN) == 0) {
+            /* 当检测到主节点主观下线后，向 "sdown"频道发布消息 */
             sentinelEvent(LL_WARNING,"+sdown",ri,"%@");
             ri->s_down_since_time = mstime();
             ri->flags |= SRI_S_DOWN;    /* 记录主观下线的标记 */
@@ -4437,6 +4465,7 @@ void sentinelFailoverSwitchToPromotedSlave(sentinelRedisInstance *master) {
     sentinelRedisInstance *ref = master->promoted_slave ?
                                  master->promoted_slave : master;
 
+    /* 哨兵在完成主节点切换后，向"+switch-master" 频道发布消息 */
     sentinelEvent(LL_WARNING,"+switch-master",master,"%s %s %d %s %d",
         master->name, master->addr->ip, master->addr->port,
         ref->addr->ip, ref->addr->port);
