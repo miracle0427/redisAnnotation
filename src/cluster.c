@@ -1792,10 +1792,17 @@ int clusterProcessPacket(clusterLink *link) {
         /* If this is a MEET packet from an unknown node, we still process
          * the gossip section here since we have to trust the sender because
          * of the message type. */
+        /* 处理Meet消息，将发送Meet消息的节点加入本地记录的节点列表中 */
         if (!sender && type == CLUSTERMSG_TYPE_MEET)
             clusterProcessGossipSection(hdr,link);
 
         /* Anyway reply with a PONG */
+        /* 
+            Ping和Pong消息使用的是同一个函数来生成和发送的，所以它们包含的内容也是相同的
+            也就是说Pong消息中也包含了Pong消息发送节点的信息和它已知的其他节点信息
+            因此Ping消息的发送节点从Pong消息中，也能获取其他节点的最新信息，这就能实现gossip协议
+            通过多轮消息传播，达到每个节点拥有一致信息的目的
+         */
         clusterSendPing(link,CLUSTERMSG_TYPE_PONG);
     }
 
@@ -1875,6 +1882,7 @@ int clusterProcessPacket(clusterLink *link) {
         }
 
         /* Update our info about the node */
+        /* 当收到Pong消息时，更新本地记录的目标节点Pong消息最新返回时间 */
         if (link->node && type == CLUSTERMSG_TYPE_PONG) {
             link->node->pong_received = mstime();
             link->node->ping_sent = 0;
@@ -2010,6 +2018,10 @@ int clusterProcessPacket(clusterLink *link) {
         }
 
         /* Get info from the gossip section */
+        /* 
+            如果发送消息的节点是主节点，更新本地记录的slots分布信息
+            调用clusterProcessGossipSection函数处理Ping或Pong消息的消息体
+         */
         if (sender) clusterProcessGossipSection(hdr,link);
     } else if (type == CLUSTERMSG_TYPE_FAIL) {
         clusterNode *failing;
@@ -2205,6 +2217,11 @@ void clusterReadHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
 
         /* Total length obtained? Process this packet. */
         if (rcvbuflen >= 8 && rcvbuflen == ntohl(hdr->totlen)) {
+            /* 
+                当读到一个完整的消息后，调用clusterProcessPacket函数处理这个消息
+                因为节点间发送的消息类型不止Ping消息，所以clusterProcessPacket函数会先从收到的消息头中读取消息类型，
+                然后根据不同的消息类型，执行不同的分支代码
+             */
             if (clusterProcessPacket(link)) {
                 sdsfree(link->rcvbuf);
                 link->rcvbuf = sdsempty();
@@ -2418,6 +2435,7 @@ void clusterSendPing(clusterLink *link, int type) {
     buf = zcalloc(totlen);
     hdr = (clusterMsg*) buf;
 
+    /* 第一步，构建Ping消息头 */
     /* Populate the header. */
     if (link->node && type == CLUSTERMSG_TYPE_PING)
         link->node->ping_sent = mstime();
@@ -2425,7 +2443,13 @@ void clusterSendPing(clusterLink *link, int type) {
 
     /* Populate the gossip fields */
     int maxiterations = wanted*3;
+    /* 
+        第二步，构建Ping消息体
+        具体写入多少个节点的信息，其实是由三个变量freshnodes,wanted和maxiterations控制的
+
+    */
     while(freshnodes > 0 && gossipcount < wanted && maxiterations--) {
+        /* 从集群节点中随机选一个节点出来 */
         dictEntry *de = dictGetRandomKey(server.cluster->nodes);
         clusterNode *this = dictGetVal(de);
 
@@ -2451,7 +2475,7 @@ void clusterSendPing(clusterLink *link, int type) {
         /* Do not add a node we already have. */
         if (clusterNodeIsInGossipSection(hdr,gossipcount,this)) continue;
 
-        /* Add it */
+        /* 为这个节点设置相应的Ping消息体 */
         clusterSetGossipEntry(hdr,gossipcount,this);
         freshnodes--;
         gossipcount++;
@@ -2485,6 +2509,7 @@ void clusterSendPing(clusterLink *link, int type) {
     totlen += (sizeof(clusterMsgDataGossip)*gossipcount);
     hdr->count = htons(gossipcount);
     hdr->totlen = htonl(totlen);
+    /* 第三步，将Ping消息发送给随机选出的目标节点 */
     clusterSendMessage(link,buf,totlen);
     zfree(buf);
 }
@@ -3320,6 +3345,11 @@ void clusterHandleManualFailover(void) {
  * -------------------------------------------------------------------------- */
 
 /* This is executed 10 times every second */
+/* 
+    clusterCron函数的一个主要逻辑就是每经过10次执行，就会随机选五个节点，然后在这五个节点中， 
+    遴选出最早向当前节点发送Pong消息的那个节点，并向它发送Ping消息。而clusterCron函数本身是
+    每1秒执行10次，所以，这也相当于是集群节点每1秒向一个随机节点发送gossip协议的Ping消息
+*/
 void clusterCron(void) {
     dictIterator *di;
     dictEntry *de;
@@ -3378,6 +3408,7 @@ void clusterCron(void) {
      * better decisions in other part of the code. */
     di = dictGetSafeIterator(server.cluster->nodes);
     server.cluster->stats_pfail_nodes = 0;
+    /* 在调用clusterSendPing函数向其他节点发送Ping消息前，会检查它和其他节点连接情况，如果连接断开了，节点会重新建立连接 */
     while((de = dictNext(di)) != NULL) {
         clusterNode *node = dictGetVal(de);
 
@@ -3418,6 +3449,7 @@ void clusterCron(void) {
             link->fd = fd;
             node->link = link;
             aeCreateFileEvent(server.el,link->fd,AE_READABLE,
+                    /* 当一个节点收到Ping消息时，回调函数clusterReadHandler会进行处理 */
                     clusterReadHandler,link);
             /* Queue a PING in the new connection ASAP: this is crucial
              * to avoid false positives in failure detection.
@@ -3449,24 +3481,27 @@ void clusterCron(void) {
 
     /* Ping some random node 1 time every 10 iterations, so that we usually ping
      * one random node every second. */
-    if (!(iteration % 10)) {
+    if (!(iteration % 10)) {    /* 每执行10次执行1次该分支 */
         int j;
 
         /* Check a few random nodes and ping the one with the oldest
          * pong_received time. */
-        for (j = 0; j < 5; j++) {
+        for (j = 0; j < 5; j++) {   /* 随机选5个节点 */
             de = dictGetRandomKey(server.cluster->nodes);
             clusterNode *this = dictGetVal(de);
 
+            /* 不向断连的节点、当前节点和正在握手的节点发送Ping消息 */
             /* Don't ping nodes disconnected or with a ping currently active. */
             if (this->link == NULL || this->ping_sent != 0) continue;
             if (this->flags & (CLUSTER_NODE_MYSELF|CLUSTER_NODE_HANDSHAKE))
                 continue;
+            /* 遴选向当前节点发送Pong消息最早的节点 */
             if (min_pong_node == NULL || min_pong > this->pong_received) {
                 min_pong_node = this;
                 min_pong = this->pong_received;
             }
         }
+        /* 如果遴选出了最早向当前节点发送Pong消息的节点，那么调用clusterSendPing函数向该节点发送Ping消息 */
         if (min_pong_node) {
             serverLog(LL_DEBUG,"Pinging node %.40s", min_pong_node->name);
             clusterSendPing(min_pong_node->link, CLUSTERMSG_TYPE_PING);
