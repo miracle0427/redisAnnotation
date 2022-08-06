@@ -2682,6 +2682,14 @@ int processCommand(client *c) {
      * However we don't perform the redirection if:
      * 1) The sender of this command is our master.
      * 2) The command has no key arguments. */
+    /* 
+        判断当前节点是否处于集群模式，如果当前节点处于集群模式，判断是否需要执行重定向
+        当然，如果当前节点收到的命令来自于它在集群中的主节点，或者它收到的命令并没有带key参数,
+        那么在这些情况下，集群节点并不会涉及重定向请求的操作。不过,这里有一个不带key参数的命令
+        是一个例外， 就是EXEC命令。如果当前节点收到EXEC命令,仍然会判断是否要进行请求重定向。
+
+        如果不需要执行请求重定向，那么会继续执行后续的流程,并调用call函数实际运行命令。
+     */
     if (server.cluster_enabled &&
         !(c->flags & CLIENT_MASTER) &&
         !(c->flags & CLIENT_LUA &&
@@ -2691,6 +2699,11 @@ int processCommand(client *c) {
     {
         int hashslot;
         int error_code;
+        /* 
+            它是调用了getNodeByQuery函数来查询当前收到的命令能在哪个集群节点上进行处理。
+            如果getNodeByQuery函数返回的结果是空，或者查询到的集群节点不是当前节点，
+            那么就会调用clusterRedirectClient函数来实际执行请求重定向。 
+        */
         clusterNode *n = getNodeByQuery(c,c->cmd,c->argv,c->argc,
                                         &hashslot,&error_code);
         if (n == NULL || n != server.cluster->myself) {
@@ -2826,6 +2839,7 @@ int processCommand(client *c) {
         c->cmd->proc != execCommand && c->cmd->proc != discardCommand &&
         c->cmd->proc != multiCommand && c->cmd->proc != watchCommand)
     {
+        /* 缓存命令 */
         queueMultiCommand(c);
         addReply(c,shared.queued);
     } else {

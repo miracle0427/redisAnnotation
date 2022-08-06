@@ -5466,42 +5466,47 @@ void readwriteCommand(client *c) {
     addReply(c,shared.ok);
 }
 
-/* Return the pointer to the cluster node that is able to serve the command.
- * For the function to succeed the command should only target either:
+/* 
+ * 返回指向能够为该命令服务的集群节点的指针。
+ * 为了使该函数成功，该命令应该只针对以下两种情况:
  *
- * 1) A single key (even multiple times like LPOPRPUSH mylist mylist).
- * 2) Multiple keys in the same hash slot, while the slot is stable (no
- *    resharding in progress).
+ * 1) 一个单一的键（甚至多次，如LPOPRPUSH mylist mylist）。
+ * 2) 同一个hash槽的多个key，并且hash槽是稳定的(不正在执行rehash)。
  *
- * On success the function returns the node that is able to serve the request.
- * If the node is not 'myself' a redirection must be perfomed. The kind of
- * redirection is specified setting the integer passed by reference
- * 'error_code', which will be set to CLUSTER_REDIR_ASK or
- * CLUSTER_REDIR_MOVED.
+ * 一旦成功，该函数将返回能够为该请求提供服务的节点。
+ * 如果节点不是 "我自己"，就必须进行重定向。
+ * 重定向的种类被指定设置为由指针'error_code'传递的整数，它将被设置为
+ * CLUSTER_REDIR_ASK或者CLUSTER_REDIR_MOVED。
  *
- * When the node is 'myself' 'error_code' is set to CLUSTER_REDIR_NONE.
+ * 当节点是'我自己'时，'error_code'被设置为CLUSTER_REDIR_NONE。
  *
- * If the command fails NULL is returned, and the reason of the failure is
- * provided via 'error_code', which will be set to:
+ * 如果命令失败，将返回NULL，失败的原因将通过'error_code'提供，error_code将被设置为。
  *
- * CLUSTER_REDIR_CROSS_SLOT if the request contains multiple keys that
- * don't belong to the same hash slot.
+ * CLUSTER_REDIR_CROSS_SLOT，如果请求中包含多个不属于同一哈希槽的键。
  *
- * CLUSTER_REDIR_UNSTABLE if the request contains multiple keys
- * belonging to the same slot, but the slot is not stable (in migration or
- * importing state, likely because a resharding is in progress).
+ * CLUSTER_REDIR_UNSTABLE，如果请求包含属于同一槽位的多个键，但该槽位不稳定
+ * （处于迁移或导入状态，可能是因为正在进行重新分片）。
+ * 
+ * CLUSTER_REDIR_DOWN_UNBOUND，如果请求的槽没有绑定到任何节点，在这种情况下，
+ * 集群的全局状态应该已经是 "down "了，但是依靠全局状态的更新是很脆弱的，所以我们也在这里处理。
  *
- * CLUSTER_REDIR_DOWN_UNBOUND if the request addresses a slot which is
- * not bound to any node. In this case the cluster global state should be
- * already "down" but it is fragile to rely on the update of the global state,
- * so we also handle it here.
- *
- * CLUSTER_REDIR_DOWN_STATE if the cluster is down but the user attempts to
- * execute a command that addresses one or more keys. */
+ * CLUSTER_REDIR_DOWN_STATE，如果集群已经关闭，但用户试图 执行一条涉及一个或多个键的命令。
+ */
 clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, int argc, int *hashslot, int *error_code) {
     clusterNode *n = NULL;
     robj *firstkey = NULL;
     int multiple_keys = 0;
+    /*
+        第一步,使用multiState结构体封装收到的命令
+
+        因为集群节点可能收到MULTI命令,而MULTI命令表示紧接着它的多条命令是需要作为一个事务来执行的。
+        当Redis server收到客户端发送的MULTI命令后，它会调用MULTI命令的处理函数multiCommand，在表示
+        客户端的结构体变量client 中设置CLIENT_MULTI标记
+
+        而在命令执行函数processCommand中，它在处理命令时，会判断客户端变量client中否有CLIENT_MULTI标记。
+        如果有的话，processCommand会调用queueMultiCommand函数,把后续收到的命令缓存在client结构体的mstate
+        成员变量中。mstate 成员变量的类型是 multiState结构体，它记录了MULTI命令后的其他命令以及命令个数。
+    */
     multiState *ms, _ms;
     multiCmd mc;
     int i, slot = 0, migrating_slot = 0, importing_slot = 0, missing_keys = 0;
@@ -5519,6 +5524,9 @@ clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, in
 
     /* We handle all the cases as if they were EXEC commands, so we have
      * a common code path for everything */
+    /*
+        MULTI命令后缓存的其他命令并不会立即执行，而是需要等到EXEC命令执行时才会执行。
+    */
     if (cmd->proc == execCommand) {
         /* If CLIENT_MULTI flag is not set EXEC is just going to return an
          * error. */
@@ -5538,6 +5546,9 @@ clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, in
 
     /* Check that all the keys are in the same hash slot, and obtain this
      * slot and the node associated. */
+    /*
+        第二步,针对收到的每个命令,逐一检查这些命令访问的key所在的slots
+    */
     for (i = 0; i < ms->count; i++) {
         struct redisCommand *mcmd;
         robj **margv;
@@ -5550,7 +5561,7 @@ clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, in
         keyindex = getKeysFromCommand(mcmd,margv,margc,&numkeys);
         for (j = 0; j < numkeys; j++) {
             robj *thiskey = margv[keyindex[j]];
-            int thisslot = keyHashSlot((char*)thiskey->ptr,
+            int thisslot = keyHashSlot((char*)thiskey->ptr, /* 获取key所属的slot */
                                        sdslen(thiskey->ptr));
 
             if (firstkey == NULL) {
@@ -5558,12 +5569,13 @@ clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, in
                  * and node. */
                 firstkey = thiskey;
                 slot = thisslot;
-                n = server.cluster->slots[slot];
+                n = server.cluster->slots[slot];    /* 查找key所属的slot对应的集群节点 */
 
                 /* Error: If a slot is not served, we are in "cluster down"
                  * state. However the state is yet to be updated, so this was
                  * not trapped earlier in processCommand(). Report the same
                  * error to the client. */
+                /* 情况一:查找的集群节点为空,此时它会报错 */
                 if (n == NULL) {
                     getKeysFreeResult(keyindex);
                     if (error_code)
@@ -5576,6 +5588,12 @@ clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, in
                  * can safely serve the request, otherwise we return a TRYAGAIN
                  * error). To do so we set the importing/migrating state and
                  * increment a counter for every missing key. */
+                /*
+                    情况二:查找的集群节点就是当前节点，而key所属的slot正在做数据迁出操作，
+                    设置变量 migrating_slot 为1,表示正在做数据迁出。
+
+                    情况三: key 所属的slot正在做数据迁入操作，设置变量importing_slot为1,示正在做数据迁入。
+                */
                 if (n == myself &&
                     server.cluster->migrating_slots_to[slot] != NULL)
                 {
@@ -5590,6 +5608,7 @@ clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, in
                     if (slot != thisslot) {
                         /* Error: multiple keys from different slots. */
                         getKeysFreeResult(keyindex);
+                        /* 如果命令包含的key不止1个，且这些keys不在同一个slot,也会报错 */
                         if (error_code)
                             *error_code = CLUSTER_REDIR_CROSS_SLOT;
                         return NULL;
@@ -5602,6 +5621,11 @@ clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, in
             }
 
             /* Migarting / Improrting slot? Count keys we don't have. */
+            /* 
+                如果节点正在做数据迁出或迁入，那么，getNodeByQuery 函数就会调用
+                lookupKeyRead函数，检查命令访问的key是否在当前节点的数据库中。
+                如果没有的话，它会用一个变量missing_keys,记录缺失的key数量。
+            */
             if ((migrating_slot || importing_slot) &&
                 lookupKeyRead(&server.db[0],thiskey) == NULL)
             {
@@ -5611,6 +5635,14 @@ clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, in
         getKeysFreeResult(keyindex);
     }
 
+    /* 
+        第三步，根据slot的检查结果返回hashslot、error_code 和相应的集群节点
+    */
+
+   /*
+        情况一:命令访问key所属的slot没有对应的集群节点，返回当前节点。
+        在这种情况下，有可能是集群有故障导致无法查找到slot所对应的节点，而error_code中会有相应的报错信息。
+    */
     /* No key at all in command? then we can serve the request
      * without redirections or errors in all the cases. */
     if (n == NULL) return myself;
@@ -5627,11 +5659,20 @@ clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, in
     /* MIGRATE always works in the context of the local node if the slot
      * is open (migrating or importing state). We need to be able to freely
      * move keys among instances in this case. */
+    /*
+        情况二:命令访问key所属的slot正在做数据迁出或迁入，而且当前命令就是用来执行数据
+        迁移的MIGRATE命令,返回当前节点，
+    */
     if ((migrating_slot || importing_slot) && cmd->proc == migrateCommand)
         return myself;
 
     /* If we don't have all the keys and we are migrating the slot, send
      * an ASK redirection. */
+    /*
+        情况三:命令访问key所属的slot正在做数据迁出，并且命令访问的key在当前节点数据库
+        中缺失了,也就是 missing_keys 大于0。此时，error_code设置为CLUSTER_REDIR_ASK, 
+        并返回数据迁出的目标节点。
+    */
     if (migrating_slot && missing_keys) {
         if (error_code) *error_code = CLUSTER_REDIR_ASK;
         return server.cluster->migrating_slots_to[slot];
@@ -5666,6 +5707,10 @@ clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, in
 
     /* Base case: just return the right node. However if this node is not
      * myself, set error_code to MOVED since we need to issue a rediretion. */
+    /*
+        情况四:命令访问key所属的slot对应的节点不是当前节点，而是其他节点，将
+        error_code 设置为 CLUSTER_REDIR_MOVED ,并返回key所属slot对应的实际节点。
+    */
     if (n != myself && error_code) *error_code = CLUSTER_REDIR_MOVED;
     return n;
 }
