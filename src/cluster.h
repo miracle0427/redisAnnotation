@@ -118,7 +118,13 @@ typedef struct clusterNode {
     char name[CLUSTER_NAMELEN]; /* Node name, hex string, sha1-size */
     int flags;      /* CLUSTER_NODE_... */
     uint64_t configEpoch; /* Last configEpoch observed for this node */
-    unsigned char slots[CLUSTER_SLOTS/8]; /* slots handled by this node */
+    /*
+        Redis Cluster是先把键值对映射到哈希槽(slots) 中, 然后通过给不同集群节点分配slots这样的方法，来完成数据在集群节点间的分配的。
+
+        slots记录当前节点负责哪些slots
+        数组每个元素的每一位表示1个slot，如果数组元素某一位的值是1，那么就表明当前节点负责这一位对应的slot
+    */
+    unsigned char slots[CLUSTER_SLOTS/8]; 
     int numslots;   /* Number of slots handled by this node */
     int numslaves;  /* Number of slave nodes, if this is a master */
     struct clusterNode **slaves; /* pointers to slave nodes */
@@ -147,10 +153,14 @@ typedef struct clusterState {
     int size;             /* Num of master nodes with at least one slot */
     dict *nodes;          /* Hash table of name -> clusterNode structures */
     dict *nodes_black_list; /* Nodes we don't re-add for a few seconds. */
+    /* 表示当前节点负责的slot正在迁往哪个节点。比如，migrating_slots_to[K] = node1,这就表示当前节点负责的slot K,正在迁往node1。*/
     clusterNode *migrating_slots_to[CLUSTER_SLOTS];
+    /* 表示当前节点正在从哪个节点迁入某个slot.比如, importing_slots_from[L] = node3,这就表示当前节点正从node3迁入slot L。 */
     clusterNode *importing_slots_from[CLUSTER_SLOTS];
+    /* 表示16384个slot分别是由哪个节负责的。比如，slots[M] = node2,这就表示slot M是由node2负责的。*/
     clusterNode *slots[CLUSTER_SLOTS];
     uint64_t slots_keys_count[CLUSTER_SLOTS];
+    /* slots_to_keys字典树:用来记录slot和key的对应关系，可以通过它快速找到slot 上有哪些keys。 */
     rax *slots_to_keys;
     /* The following fields are used to take the slave state on elections. */
     mstime_t failover_auth_time; /* Time of previous or next election. */

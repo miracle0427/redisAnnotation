@@ -4387,15 +4387,18 @@ NULL
         if ((slot = getSlotOrReply(c,c->argv[2])) == -1) return;
 
         if (!strcasecmp(c->argv[3]->ptr,"migrating") && c->argc == 5) {
+            /* 对于数据迁出来说，判断迁出的slot是否在当前节点 */
             if (server.cluster->slots[slot] != myself) {
                 addReplyErrorFormat(c,"I'm not the owner of hash slot %u",slot);
                 return;
             }
+            /* 根据输入的节点ID,在全局变量server的cluster->nodes数组中，查找并返回对应节点。*/
             if ((n = clusterLookupNode(c->argv[4]->ptr)) == NULL) {
                 addReplyErrorFormat(c,"I don't know about node %s",
                     (char*)c->argv[4]->ptr);
                 return;
             }
+            /* 保存结果 */
             server.cluster->migrating_slots_to[slot] = n;
         } else if (!strcasecmp(c->argv[3]->ptr,"importing") && c->argc == 5) {
             if (server.cluster->slots[slot] == myself) {
@@ -4414,6 +4417,21 @@ NULL
             server.cluster->importing_slots_from[slot] = NULL;
             server.cluster->migrating_slots_to[slot] = NULL;
         } else if (!strcasecmp(c->argv[3]->ptr,"node") && c->argc == 5) {
+            /*
+                主要工作是清除节点上migrating_slots_to数组和importing_slots_from数组中的标记。
+
+                对于migrating_slots_to数组来说，在源节点上,这个数组中迁移slot 所对应的元素,记
+                录了目的节点。那么，在源节点上执行迁移结果标记命令时，处理NODE标记的代码分支,
+                就会调用countKeysInSlot函数检查迁移slot 中是否还有key。 如果没有key了,那么
+                migrating_slots_to数组中迁移slot 所对应的元素会被置为NULL,也就是取消了源节点上的迁出标记。
+
+                而对于importing_slots_from数组来说，在目的节点上,这个数组中迁移slot所对应的元
+                素记录了源节点。那么，在目的节点上执行迁移结果标记命令时，处理NODE标记的代码分
+                支会检查命令参数中的是否就是目的节点自身。如果是的话，importing_slots_from 数组中
+                迁移slot 所对应的元素会被置为NULL,这就是取消了目的节点上的迁入标记。
+
+                最后，调用clusterDelSlot和clusterAddSlot函数分别更新slot迁移前和迁移后所属节点的slots数组
+            */
             /* CLUSTER SETSLOT <SLOT> NODE <NODE ID> */
             clusterNode *n = clusterLookupNode(c->argv[4]->ptr);
 
@@ -4580,9 +4598,10 @@ NULL
         long long maxkeys, slot;
         unsigned int numkeys, j;
         robj **keys;
-
+        /* 解析获取slot参数 */
         if (getLongLongFromObjectOrReply(c,c->argv[2],&slot,NULL) != C_OK)
             return;
+        /* 解析获取count参数，赋值给maxkeys */
         if (getLongLongFromObjectOrReply(c,c->argv[3],&maxkeys,NULL)
             != C_OK)
             return;
@@ -4593,10 +4612,12 @@ NULL
 
         /* Avoid allocating more than needed in case of large COUNT argument
          * and smaller actual number of keys. */
+        /* 获取待迁移slot中实际的key的数量 */
         unsigned int keys_in_slot = countKeysInSlot(slot);
         if (maxkeys > keys_in_slot) maxkeys = keys_in_slot;
 
         keys = zmalloc(sizeof(robj*)*maxkeys);
+        /* 从迁移slot中获取实际的key，并将这些key返回给客户端 */
         numkeys = getKeysInSlot(slot, keys, maxkeys);
         addReplyMultiBulkLen(c,numkeys);
         for (j = 0; j < numkeys; j++) {
@@ -4940,7 +4961,13 @@ void restoreCommand(client *c) {
             return;
         }
     }
-
+    /* 
+        首先，解析收到的命令参数,包括是否覆盖数据的标记replace、key 过期时间标记ttl、
+        key的LRU标记idletime、key 的LFU标记freq。
+        接着,它就会根据这些标记执行一系列检查。这其中就包括，如果检测到没有replace标记的话，
+        它会调用lookupKeyWrite函数，检查目的节点数据库中是否有迁移的key,如果已经存在待迁移key的话,
+        它就会返回报错信息. 
+    */
     /* Make sure this key does not already exist here... */
     if (!replace && lookupKeyWrite(c->db,c->argv[1]) != NULL) {
         addReply(c,shared.busykeyerr);
@@ -4956,6 +4983,10 @@ void restoreCommand(client *c) {
     }
 
     /* Verify RDB version and data checksum. */
+    /*
+        然后，检查迁移key的value的序列化结果，序列化后的结果中包含了RDB版本和CRC校验和，
+        调用verifyDumpPayload函数，检测RDB版本和CRC校验和。如果这两部分内容不正确，它就会返回报错信息。
+    */
     if (verifyDumpPayload(c->argv[3]->ptr,sdslen(c->argv[3]->ptr)) == C_ERR)
     {
         addReplyError(c,"DUMP payload version or checksum are wrong");
@@ -4971,6 +5002,12 @@ void restoreCommand(client *c) {
     }
 
     /* Remove the old key if needed. */
+    /*
+        最后调用dbAdd函数,把解析得到key和value写入目的节点的数据库中。
+        如果迁移命令中带有REPLACE标记，先调用dbDelete函数,删除在目的节点数据库中已经存在的迁移
+        key,然后再调用dbAdd函数写入迁移key。此外，还会设置迁移key的过期时间，以及LRU或LFU信息,并
+        最终返回成功信息。
+    */
     if (replace) dbDelete(c->db,c->argv[1]);
 
     /* Create the key and set the TTL if any */
@@ -5127,6 +5164,7 @@ void migrateCommand(client *c) {
     int num_keys = 1;  /* By default only migrate the 'key' argument. */
 
     /* Parse additional options */
+    /* 第一步，命令参数检查 */
     for (j = 6; j < c->argc; j++) {
         int moreargs = j < c->argc-1;
         if (!strcasecmp(c->argv[j]->ptr,"copy")) {
@@ -5169,6 +5207,14 @@ void migrateCommand(client *c) {
      * the caller there was nothing to migrate. We don't return an error in
      * this case, since often this is due to a normal condition like the key
      * expiring in the meantime. */
+    /*
+        第二步,读取要迁移的key和value
+
+        检查完命令参数后，migrateCommand 函数会分配两个数组ov和kv,它们的初始大小等于
+        MIGRATE命令中要迁移的key的数量。然后调用lookupKeyRead函数，逐一检查要迁移的key是否存在。
+        这是因为有的key在迁移时可能正好过期了,所以就不用迁移这些key了。最后根据实际存在的key数量，
+        来设置要迁移的key数量。
+    */
     ov = zrealloc(ov,sizeof(robj*)*num_keys);
     kv = zrealloc(kv,sizeof(robj*)*num_keys);
     int oi = 0;
@@ -5188,7 +5234,13 @@ void migrateCommand(client *c) {
 
 try_again:
     write_error = 0;
+    /*
+        第三步,填充迁移用的命令、key 和value
 
+        调用migrateGetSocket函数和目的节点建立连接;
+        调用rioInitWithBuffer函数初始化一块缓冲区, 然后调用rioWriteBulkString、
+        rioWriteBulkLongLong等函数，往这个缓冲区中填充要发送给目的节点的命令、key 和value。
+    */
     /* Connect */
     cs = migrateGetSocket(c,c->argv[1],c->argv[2],timeout);
     if (cs == NULL) {
@@ -5220,6 +5272,7 @@ try_again:
                             lookupKey() function, may be expired later. */
 
     /* Create RESTORE payload and generate the protocol to call the command. */
+    /* 针对每一个要迁移的key，往buffer中填充命令、key和value */
     for (j = 0; j < num_keys; j++) {
         long long ttl = 0;
         long long expireat = getExpire(c->db,kv[j]);
@@ -5239,20 +5292,28 @@ try_again:
 
         serverAssertWithInfo(c,NULL,
             rioWriteBulkCount(&cmd,'*',replace ? 5 : 4));
-
+        /* 在集群模式下，填充RESTORE-ASKING命令，用来发给目的节点 */
         if (server.cluster_enabled)
             serverAssertWithInfo(c,NULL,
                 rioWriteBulkString(&cmd,"RESTORE-ASKING",14));
         else
             serverAssertWithInfo(c,NULL,rioWriteBulkString(&cmd,"RESTORE",7));
         serverAssertWithInfo(c,NULL,sdsEncodedObject(kv[j]));
+        /* 填充key */
         serverAssertWithInfo(c,NULL,rioWriteBulkString(&cmd,kv[j]->ptr,
                 sdslen(kv[j]->ptr)));
+        /* 填充TTL */
         serverAssertWithInfo(c,NULL,rioWriteBulkLongLong(&cmd,ttl));
 
         /* Emit the payload argument, that is the serialized object using
          * the DUMP format. */
+        /*
+            序列化value
+            在序列化的结果中,createDumpPayload函数会增加RDB版本号和CRC校验和。
+            等目的节点收到迁移数据后，也会检查这两部分内容。
+        */
         createDumpPayload(&payload,ov[j],kv[j]);
+        /* 填充value */
         serverAssertWithInfo(c,NULL,
             rioWriteBulkString(&cmd,payload.io.buffer.ptr,
                                sdslen(payload.io.buffer.ptr)));
@@ -5273,7 +5334,10 @@ try_again:
         sds buf = cmd.io.buffer.ptr;
         size_t pos = 0, towrite;
         int nwritten = 0;
-
+        /*
+            第四步,发送迁移用的命令和数据，并读取返回结果
+            调用syncWrite函数把缓冲区中的内容按照64KB的粒度发送给目的节点，
+        */
         while ((towrite = sdslen(buf)-pos) > 0) {
             towrite = (towrite > (64*1024) ? (64*1024) : towrite);
             nwritten = syncWrite(cs->fd,buf+pos,towrite,timeout);
@@ -5307,7 +5371,10 @@ try_again:
      * We allocate num_keys+1 because the additional argument is for "DEL"
      * command name itself. */
     if (!copy) newargv = zmalloc(sizeof(robj*)*(num_keys+1));
-
+    /*
+        针对发送给目的节点的每个键值对，调用syncReadLine函数，读取目的节点的返回结果。
+        如果返回结果中有报错信息，那么进行相应的处理。
+    */
     for (j = 0; j < num_keys; j++) {
         if (syncReadLine(cs->fd, buf2, sizeof(buf2), timeout) <= 0) {
             socket_error = 1;
