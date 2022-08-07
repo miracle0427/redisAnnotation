@@ -4,6 +4,14 @@
 
 package require Tcl 8.5
 
+# 第一步，引入其他的tcl脚本文件和定义全局变量
+# 首先使用 source 关键字，引入tests目录下support子录中的redis.tcl. server.tcl 等脚本文件。
+# 这些脚本文件实现了单元测试框架所需的部分功能，比如server.tcl脚本文件中，就实现了启动
+# Redis测试实例的子函数start server,而redis.tcl脚本中实现了向测试用Redis实例发送命令的子函数。
+
+# 而除了引入脚本文件之外，第一步操作还包括了定义全局变量。比如，测试框架定义了一个全局变量::all_tests,
+# 这个全局变量包含了所有预定义的单元测试。如果我们不加任何参数运行 test_helper.tcl 时，测试框架就会
+# 运行::all_ tests定义的所有测试。此外,第一步定义的全局变量，还包括测试用主机IP、端口号、跳过的测试用例集合、单一测试的用例集合,等。
 set tcl_precision 17
 source tests/support/redis.tcl
 source tests/support/server.tcl
@@ -99,7 +107,8 @@ set ::loop 0
 # the appropriate exit code depending on the test outcome.
 set ::client 0
 set ::numclients 16
-
+# 这个函数比较简单,它就是根据传入的测试用例名，用source命令把tests录下，
+# 该用例对应的tcl 脚本文件引入并执行。最后,给测试server发送"done" 的消息。
 proc execute_tests name {
     set path "tests/$name.tcl"
     set ::curfile $path
@@ -203,16 +212,30 @@ proc test_server_main {} {
     if {!$::quiet} {
         puts "Starting test server at port $port"
     }
+#   首先，它会使用socket -server命令启动一个测试server。这个测试server会创建一个
+#   socket,监听来自测试客户端的消息。那么,一旦有客户端连接时,测试server会执行
+#   accept_test_clients 函数
+
     socket -server accept_test_clients -myaddr 127.0.0.1 $port
 
     # Start the client instances
+#   第二步，它会开始启动测试客户端。
+#   test_server_main函数会执行一个for循环流程，在这个循环流程中，它会根据要启动的测
+#   试客户端数量，依次调用exec命令,执行tcl脚本。这里的测试客户端数量是由全局变量::numclients决定的，
+#   默认值是16。而执行的tcl脚本,正是当前运行的test_helper.tcl 脚本，参数也和当前脚本的参数一样,
+#   并且还加上了"-client" 参数,表示当前启动的是测试客户端。
+
     set ::clients_pids {}
     set start_port [expr {$::port+100}]
     for {set j 0} {$j < $::numclients} {incr j} {
+        # 设定测试客户端端口
         set start_port [find_available_port $start_port]
+        # 使用exec命令执行test_helper.tcl脚本，脚本参数跟当前参数一致，增加client参数，会执行test_client_main函数
         set p [exec $tclsh [info script] {*}$::argv \
             --client $port --port $start_port &]
+        # 记录每个测试客户端脚本运行的进程号
         lappend ::clients_pids $p
+        # 递增测试客户端的端口号
         incr start_port 10
     }
 
@@ -225,6 +248,9 @@ proc test_server_main {} {
     set ::failed_tests {}
 
     # Enter the event loop to handle clients I/O
+    # 在启动了测试客户端后，每隔10s周期性地执行一次 test_server_cron 函数。
+    # 而这个函数的主要工作是，当测试执行超时的时候，输出报错信息,并清理测试客户端和测试server.
+
     after 100 test_server_cron
     vwait forever
 }
@@ -245,7 +271,8 @@ proc test_server_cron {} {
 
     after 100 test_server_cron
 }
-
+#   对于 accept_test_clients 函数来说，它会调用filevent命令,监听客户端连接上是否有读事
+#   件发生。如果有读事件发生,这也就表示客户端有消息发送给测试server.那么,它会执行 read_from_test_client
 proc accept_test_clients {fd addr port} {
     fconfigure $fd -encoding binary
     fileevent $fd readable [list read_from_test_client $fd]
@@ -266,6 +293,15 @@ proc accept_test_clients {fd addr port} {
 # exception: there was a runtime exception while executing the test.
 # done: all the specified test file was processed, this test client is
 #       ready to accept a new task.
+
+# read_from_test_client 函数，会根据测试客户端发送的不同消息来执行不同的代码分支。
+# 比如，当测试客户端发送的消息是"ready" ，这就表明当前客户端是空闲的，那么,测试
+# server可以把未完成的测试用例再发给这个客户端执行，这个过程是由signal_idle_client 函数来完成的
+
+# 再比如，当测试客户端发送的消息是"done" 时，read_from_test_client 函数会统计当前已经
+# 完成的测试用例数量，而且也会调用signal_idle_client 函数,让当前客户端继续执行未完
+# 成的测试用例。
+
 proc read_from_test_client fd {
     set bytes [gets $fd]
     set payload [read $fd $bytes]
@@ -407,10 +443,22 @@ proc the_end {} {
 
 # The client is not even driven (the test server is instead) as we just need
 # to read the command, execute, reply... all this in a loop.
+
+# test_client_main函数在执行时，会先向测试server发送一个 "ready" 的消息。
+# 测试server一旦监听到有客户端连接发送了"ready" 消息，它就会通过
+# signal_idle_client 函数,把未完成的单元测试发送给这个客户端。
+# 具体来说，signal_idle_client 函数会发送 "run 测试用例名" 这样的消息给客户端。比如，
+# 当前未完成的测试用例是unit/type/string,那么 signal_idle_client 函数就会发送"run
+# unit/type/string"消息给测试客户端。
+
 proc test_client_main server_port {
     set ::test_server_fd [socket localhost $server_port]
     fconfigure $::test_server_fd -encoding binary
     send_data_packet $::test_server_fd ready [pid]
+
+# test_client_main 函数在发送了"ready" 消息之后，就会执行一个while循环流
+# 程,等待从测试server读取消息。等它收到测试server返回的"run 测试用例名" 的消息
+# 时，它就会调用execute_tests 函数,执行相应的测试用例。
     while 1 {
         set bytes [gets $::test_server_fd]
         set payload [read $::test_server_fd $bytes]
@@ -454,6 +502,14 @@ proc print_help_screen {} {
 }
 
 # parse arguments
+#   第二步，解析脚本参数
+#   这一步操作是一个for循环,它会在test_helper.tcl脚本引入其他脚本和定义全局变量后,接着执行。
+#   这个循环流程本身并不复杂，它的目的就是逐一解析 test_helper.tcl 脚本执行时携带的参数。
+#   那么，在解析参数过程中，如果test_helper.tcl 脚本带有 "single" 参数，就表示脚本并不
+#   是执行所有测试用例，而只是执行一个或多个测试用例。因此,脚本中的全局变量::single_tests, 
+#   就会保存这些测试用例，并且把全局变量 ::all_tests设置为::single_tests的值, 表示就
+#   执行::single_tests中的测试用例
+
 for {set j 0} {$j < [llength $argv]} {incr j} {
     set opt [lindex $argv $j]
     set arg [lindex $argv [expr $j+1]]
@@ -630,6 +686,10 @@ proc is_a_slow_computer {} {
     set elapsed [expr [clock milliseconds]-$start]
     expr {$elapsed > 200}
 }
+#   第三步，启动测试流程
+#   在这一步, test_helper.tcl 脚本会判断全局变量::client的值,而这个值表示是否启动测试
+#   客户端。如果::client的值为0,那么就表明当前不是启动测试客户端，因此,test_helper.tcl 
+#   脚本会来执行test_server_main函数。否则的话，test_helper.tcl 脚本会执行test_client_main函数
 
 if {$::client} {
     if {[catch { test_client_main $::test_server_port } err]} {

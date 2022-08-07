@@ -1,3 +1,18 @@
+# unit/type/string测试用例对应的测试脚本是string.tcl。这个脚本首先会调用start_server
+# 函数，启动一个测试用Redis实例，而start_server函数是在server.tcl文件中定义的。
+# 然后，测试脚本会分别测试不同的测试项，它会调用r函数来给测试用的Redis实例发送具体
+# 的命令。
+
+# 这里发送测试命令的r函数(在test_helper.tcl 文件中)，它其实会通过srv函数(在
+# test_helper.tcl 文件中)，从框架配置中获取名为::redis::redisHandle的函数。
+
+# 而这个 ::redis::redisHandle函数，是在redis.tcl文件中先和 ::redis::__dispatch__函数进行了关联，
+# 表示由 ::redis::__dispatch__ 函数来执行。不过，::redis::__dispatch__ 函数会进一步调用 
+# ::redis::__dispatch__raw__ 函数，来实际发送测试命令。
+
+# 需要注意的是,刚才介绍的这三个函数名中都会带有id号。这个id号是脚本在运行过程中动态赋值的，
+# 并且它表示的是，测试命令要发送的测试用Redis实例的socket描述符。
+
 start_server {tags {"string"}} {
     test {SET and GET an item} {
         r set x foobar
