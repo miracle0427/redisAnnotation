@@ -726,6 +726,16 @@ int64_t commandFlagsFromString(char *s) {
  *                     keys, programmatically creates key names, or any
  *                     other reason.
  */
+/*
+    name是新增命令的名称；cmdfunc命令对应的实现函数，strflags命令标记
+    RM_CreateCommand 函数的主要作用，是创建一个RedisModuleCommandProxy 结构体类型的变量cp。
+    这个变量类似于新增命令的代理命令,它本身记录了新增命令对应的实现函数，与此同时，
+    又创建了一个 redisCommand 结构体类型的成员变量rediscmd。
+
+    在Redis源码中，redisCommand 类型的变量对应了Redis 命令表中的一个命令。
+    当Redis收到客户端发送的命令时，会在命令表中查找命令名称，以及命令对应的 redisCommand 变量。
+    而 redisCommand 结构体中的成员变量proc,就对应了命令的实现函数。
+*/
 int RM_CreateCommand(RedisModuleCtx *ctx, const char *name, RedisModuleCmdFunc cmdfunc, const char *strflags, int firstkey, int lastkey, int keystep) {
     int64_t flags = strflags ? commandFlagsFromString((char*)strflags) : 0;
     if (flags == -1) return REDISMODULE_ERR;
@@ -776,16 +786,16 @@ void RM_SetModuleAttribs(RedisModuleCtx *ctx, const char *name, int ver, int api
     RedisModule *module;
 
     if (ctx->module != NULL) return;
-    module = zmalloc(sizeof(*module));
-    module->name = sdsnew((char*)name);
-    module->ver = ver;
+    module = zmalloc(sizeof(*module));  /* 分配RedisModule结构体的空间 */
+    module->name = sdsnew((char*)name); /* 设置模块名 */
+    module->ver = ver;  /* 设置模板版本 */
     module->apiver = apiver;
     module->types = listCreate();
     module->usedby = listCreate();
     module->using = listCreate();
     module->filters = listCreate();
     module->in_call = 0;
-    ctx->module = module;
+    ctx->module = module;   /* 在记录模块运行状态的 RedisModuleCtx变量中保存模块指针 */
 }
 
 /* Return non-zero if the module name is busy.
@@ -5211,12 +5221,26 @@ dictType moduleAPIDictType = {
 int moduleRegisterApi(const char *funcname, void *funcptr) {
     return dictAdd(server.moduleapi, (char*)funcname, funcptr);
 }
+/*
+    moduleRegisterApi 函数会把"RedisModule_"开头的API函数,转换成"RM_"开头的API函数，
+    并通过dictAdd函数，将API函数添加到全局的moduleapi哈希表中。
+    
+    而在这个哈希表中，哈希项的key是API的名称，value 是这个API对应的函数指针。这样
+    一来,当我们开发模块要用到这些API时，就可以通过moduleapi哈希表查找API名称,然后
+    获得API函数指针并进行使用了。
+*/
 
 #define REGISTER_API(name) \
     moduleRegisterApi("RedisModule_" #name, (void *)(unsigned long)RM_ ## name)
 
 /* Global initialization at Redis startup. */
 void moduleRegisterCoreAPI(void);
+/*
+    创建和初始化扩展模块框架运行所需的数据结构。这其中比较重要的初始化操作包括:
+    1.创建保存待加载模块的列表，这对应了全局变量server的 loadmodule_queue 成员变量;
+    2.创建保存扩展模块的全局哈希表modules;
+    3.调用moduleRegisterCoreAPI函数注册核心API。
+*/
 
 void moduleInitModulesSystem(void) {
     moduleUnblockedClients = listCreate();
@@ -5267,6 +5291,7 @@ void moduleLoadFromQueue(void) {
     listRewind(server.loadmodule_queue,&li);
     while((ln = listNext(&li))) {
         struct moduleLoadQueueEntry *loadmod = ln->value;
+        /* 根据模块文件所在的路径，模块所需的参数来完成拓展模块的加载 */
         if (moduleLoad(loadmod->path,(void **)loadmod->argv,loadmod->argc)
             == C_ERR)
         {
@@ -5309,6 +5334,10 @@ void moduleUnregisterCommands(struct RedisModule *module) {
 
 /* Load a module and initialize it. On success C_OK is returned, otherwise
  * C_ERR is returned. */
+/* 
+    在moduleLoad函数中，它会在我们自行开发的模块文件中查找 "RedisModule_OnLoad" 函数, 
+    并执行这个函数。然后,它会调用dictAdd函数,把成功加载的模块添加到全局哈希表modules中
+ */
 int moduleLoad(const char *path, void **module_argv, int module_argc) {
     int (*onload)(void *, void **, int);
     void *handle;
@@ -5475,6 +5504,12 @@ size_t moduleCount(void) {
 
 /* Register all the APIs we export. Keep this function at the end of the
  * file so that's easy to seek it to add new entries. */
+/*
+    在全局变量server中,创建两个哈希表成员变量moduleapi和sharedapi,
+    它们是分别用来保存模块向外暴露的API以及模块之间共享的API的。
+    紧接着，这个函数会调用REGISTER_API宏,注册模块的核心API函数。
+    这些API函数其实是redis拓展模块框架自身已经实现好的，我们在开发拓展模块时都会用到它们
+*/
 void moduleRegisterCoreAPI(void) {
     server.moduleapi = dictCreate(&moduleAPIDictType,NULL);
     server.sharedapi = dictCreate(&moduleAPIDictType,NULL);

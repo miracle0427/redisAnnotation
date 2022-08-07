@@ -2523,7 +2523,7 @@ void call(client *c, int flags) {
     dirty = server.dirty;
     updateCachedTime(0);
     start = server.ustime;
-    c->cmd->proc(c);
+    c->cmd->proc(c);    /* 执行命令 */
     duration = ustime()-start;
     dirty = server.dirty-dirty;
     if (dirty < 0) dirty = 0;
@@ -4179,6 +4179,7 @@ int main(int argc, char **argv) {
     server.sentinel_mode = checkForSentinelMode(argc,argv);
     /* 第一轮赋值：为各种参数设置默认值 */
     initServerConfig();
+    /* 初始化拓展模块框架 */
     moduleInitModulesSystem();
 
     /* Store the executable path and arguments in a safe place in order
@@ -4331,6 +4332,7 @@ int main(int argc, char **argv) {
     #ifdef __linux__
         linuxMemoryWarnings();
     #endif
+    /* 加载拓展模块 */
         moduleLoadFromQueue();
         InitServerLast();
         loadDataFromDisk();

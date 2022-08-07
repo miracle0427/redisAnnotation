@@ -208,6 +208,11 @@ typedef struct RedisModuleTypeMethods {
     int aux_save_triggers;
 } RedisModuleTypeMethods;
 
+/*
+    这个宏会把传入的参数name,传递给 RedisModule_GetApi 函数指针，而RedisModule_GetApi函数指针
+    会将参数name和 "RedisModule_" 字符串拼接起来，这就组成了模块框架中以 "RedisModule_" 开头的
+    API函数的名称了，从而可以获得同名API函数的指针。
+*/
 #define REDISMODULE_GET_API(name) \
     RedisModule_GetApi("RedisModule_" #name, ((void **)&RedisModule_ ## name))
 
@@ -219,6 +224,10 @@ void *REDISMODULE_API_FUNC(RedisModule_Realloc)(void *ptr, size_t bytes);
 void REDISMODULE_API_FUNC(RedisModule_Free)(void *ptr);
 void *REDISMODULE_API_FUNC(RedisModule_Calloc)(size_t nmemb, size_t size);
 char *REDISMODULE_API_FUNC(RedisModule_Strdup)(const char *str);
+/* 
+    RedisModule_GetApi 函数指针是通过 REDISMODULE_API_FUNC 这个宏定义来实现
+    的。在这里，REDISMODULE_API_FUNC宏的作用是把它的参数设置为函数指针
+ */
 int REDISMODULE_API_FUNC(RedisModule_GetApi)(const char *, void *);
 int REDISMODULE_API_FUNC(RedisModule_CreateCommand)(RedisModuleCtx *ctx, const char *name, RedisModuleCmdFunc cmdfunc, const char *strflags, int firstkey, int lastkey, int keystep);
 void REDISMODULE_API_FUNC(RedisModule_SetModuleAttribs)(RedisModuleCtx *ctx, const char *name, int ver, int apiver);
@@ -386,7 +395,12 @@ int REDISMODULE_API_FUNC(RedisModule_CommandFilterArgDelete)(RedisModuleCommandF
 static int RedisModule_Init(RedisModuleCtx *ctx, const char *name, int ver, int apiver) __attribute__((unused));
 static int RedisModule_Init(RedisModuleCtx *ctx, const char *name, int ver, int apiver) {
     void *getapifuncptr = ((void**)ctx)[0];
+    /* 
+        第一步是设置 RedisModule_GetApi 函数，让它等于 RedisModuleCtx结构体中的函数指针getapifuncptr.
+        对于 RedisModule_GetApi 函数指针来说，它又进一步指向了 API 函数，它的参数就包括了API 函数名称和指向API函数的指针。
+    */
     RedisModule_GetApi = (int (*)(const char *, void *)) (unsigned long)getapifuncptr;
+    /* 第二步是调用 REDISMODULE_GET_API 宏，来获得扩展模块框架提供的API函数。这样一来，新增模块中就可以使用框架的API了。 */
     REDISMODULE_GET_API(Alloc);
     REDISMODULE_GET_API(Calloc);
     REDISMODULE_GET_API(Free);
@@ -553,6 +567,12 @@ static int RedisModule_Init(RedisModuleCtx *ctx, const char *name, int ver, int 
     REDISMODULE_GET_API(CommandFilterArgDelete);
 #endif
 
+    /* 
+        第三步，调用 RedisModule_IsModuleNameBusy 函数，检查当前注册的新增模块名称是否已经存在。
+        如果这个模块已经存在了，那么它就会报错返回。而如果模块不存在，它就调用
+        RedisModule_SetModuleAttribs函数,给新增模块分配一个RedisModule结构体,并初始化
+        这个结构体中的成员变量。而RedisModule结构体正是用来记录一个模块的相关属性的。
+    */
     if (RedisModule_IsModuleNameBusy && RedisModule_IsModuleNameBusy(name)) return REDISMODULE_ERR;
     RedisModule_SetModuleAttribs(ctx,name,ver,apiver);
     return REDISMODULE_OK;

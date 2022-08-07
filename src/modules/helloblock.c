@@ -94,6 +94,7 @@ void HelloBlock_Disconnected(RedisModuleCtx *ctx, RedisModuleBlockedClient *bc) 
 /* HELLO.BLOCK <delay> <timeout> -- Block for <count> seconds, then reply with
  * a random number. Timeout is the command timeout, so that you can test
  * what happens when the delay is greater than the timeout. */
+/* 开发新增命令的实现函数 */
 int HelloBlock_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     if (argc != 3) return RedisModule_WrongArity(ctx);
     long long delay;
@@ -201,13 +202,25 @@ int HelloKeys_RedisCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int ar
 
 /* This function must be present on each Redis module. It is used in order to
  * register the commands into the Redis server. */
+/*
+    模块框架会在模块文件中，查找 RedisModule_OnLoad 函数。RedisModule_OnLoad是每个
+    新增模块都必须包含的函数，它是扩展模块框架加载新增模块的入口。通过这个函数,我们
+    可以把新增的模块命令注册到Redis的命令表中，从而可以在Redis中使用新增命令。
+*/
 int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     REDISMODULE_NOT_USED(argv);
     REDISMODULE_NOT_USED(argc);
 
+    /* 
+        首先，调用 RedisModule_Init 函数来注册新增的模块 
+        其中,第一个参数ctx是 RedisModuleCtx 结构体类型变量,这个结构体记录了模块的指针、
+        执行模块命令的客户端，以及运行时状态等信息。第二个参数name表示的新增模块的名称，
+        而第三和第四个参数表示的是API版本。
+    */
     if (RedisModule_Init(ctx,"helloblock",1,REDISMODULE_APIVER_1)
         == REDISMODULE_ERR) return REDISMODULE_ERR;
 
+    /* 注册新增命令 */
     if (RedisModule_CreateCommand(ctx,"hello.block",
         HelloBlock_RedisCommand,"",0,0,0) == REDISMODULE_ERR)
         return REDISMODULE_ERR;
