@@ -126,15 +126,22 @@ void freeReplicationBacklog(void) {
  * the backlog without incrementing the offset. */
 void feedReplicationBacklog(void *ptr, size_t len) {
     unsigned char *p = ptr;
-
+    /* 第一步，更新全局变量server的master_repl_offset 值,在当前值的基础上加上要写入的数据长度len */
     server.master_repl_offset += len;
 
     /* This is a circular buffer, so write as much data we can at every
      * iteration and rewind the "idx" index if we reach the limit. */
+    /* 
+        第二步，根据参数len执行一个循环流程, 这个流程会循环执行，直到把要写入的数据
+        都写进循环缓冲区。而这个循环流程执行的操作又可以分成三小步。 
+    */
     while(len) {
+        /* 首先，计算本轮循环能写入的数据长度。 */
         size_t thislen = server.repl_backlog_size - server.repl_backlog_idx;
         if (thislen > len) thislen = len;
+        /* 其次，实际写入数据 */
         memcpy(server.repl_backlog+server.repl_backlog_idx,p,thislen);
+        /* 最后，更新循环缓冲区等状态信息 */
         server.repl_backlog_idx += thislen;
         if (server.repl_backlog_idx == server.repl_backlog_size)
             server.repl_backlog_idx = 0;
@@ -142,6 +149,12 @@ void feedReplicationBacklog(void *ptr, size_t len) {
         p += thislen;
         server.repl_backlog_histlen += thislen;
     }
+    /* 
+        第三步，检查 repl_backlog_histlen 的值,是否大于循环缓冲区总长度。
+        如果大于的话，它会将 repl_backlog_histlen 的值设置为循环缓冲区总长度。
+        这也就是说，一旦循环缓冲区被写满后, repl_backlog_histlen 的值就会维持在
+        循环缓冲区的总长度。
+    */
     if (server.repl_backlog_histlen > server.repl_backlog_size)
         server.repl_backlog_histlen = server.repl_backlog_size;
     /* Set the offset of the first byte we have in the backlog. */
@@ -362,17 +375,45 @@ long long addReplyReplicationBacklog(client *c, long long offset) {
              server.repl_backlog_idx);
 
     /* Compute the amount of bytes we need to discard. */
+    /*
+        首先，它会把从节点发送的全局读取位置offset,减去repl_backlog_off 的值,从而得到
+        从节点读数据时要跳过的数据长度skip
+
+        repl_backlog_off 表示仍在缓冲区中的最早保存的数据的首字节，在全局范围内的偏移量。
+        而从节点的全局读取位置和repl_backlog_off不一定一致， 所以两者相减，就是从节点要跳过的数据长度。
+    */
     skip = offset - server.repl_backlog_off;
     serverLog(LL_DEBUG, "[PSYNC] Skipping: %lld", skip);
 
     /* Point j to the oldest byte, that is actually our
      * server.repl_backlog_off byte. */
+    /*
+        然后，计算缓冲区中最早保存的数据的首字节对应在缓冲区中的位置。
+        这个位置很重要，因为有了它,从节点才能把全局读取位置转换到缓冲区中的读取位置。
+
+        可以分成两种情况来理解这段计算代码
+        一是,缓冲区还没有写满。此时, repl_backlog_histlen 就等于repl_backlog_idx, 所以代码
+        的计算相当于repl_backlog_size对它自己取模，结果为0。这也就是说，当缓冲区还没写满时,
+        缓冲区中最早保存的数据的首字节，就是在缓冲区头，这也是因为缓冲区没有被覆盖重写。
+        
+        二是,缓冲区已经写满过,并且己从头再次写入数据。此时, repl_backlog_histlen 就等于缓冲区
+        总长度repl_backlog_size。 所以，代码的计算相当于repl_backlog_idx 对repl_backlog_size 取模,
+        结果就是repl_backlog_idx.
+        这也好理解，repl_backlog_idx指向了下一次写入的数据位置，当缓冲区写满过,这个位置上是有数据的，
+        而这个数据正是缓冲区中最早保存数据的首字节。一旦再次写入时，这个位置就会被覆盖重写了
+    */
     j = (server.repl_backlog_idx +
         (server.repl_backlog_size-server.repl_backlog_histlen)) %
         server.repl_backlog_size;
     serverLog(LL_DEBUG, "[PSYNC] Index of first byte: %lld", j);
 
     /* Discard the amount of data to seek to the specified 'offset'. */
+    /* 
+        当计算得到缓冲区中最早保存数据的首字节,在缓冲区中的对应位置后，在此基础上增加
+        从节点要跳过的数据长度,得到一个新的位置值。因为这个位置值可能超越缓冲区长度边界，
+        所以它要对repl_backlog_size取模。这样一来，就得到了从节点的全局读取位置在
+        缓冲区中的对应位置了。 
+    */
     j = (j + skip) % server.repl_backlog_size;
 
     /* Feed slave with data. Since it is a circular buffer we have to
@@ -692,12 +733,18 @@ void syncCommand(client *c) {
     listAddNodeTail(server.slaves,c);
 
     /* Create the replication backlog if needed. */
+    /* 
+        Redis 创建循环缓冲区的条件是当前还没有循环缓冲区,以及当前的从节点只有1个。
+        这也就是说，当一个主节点有多个从节点时，这些从节点其实会共享使用一个循环缓冲区，
+        而这样设计的目的，主要是避免给每个从节点开辟一块缓冲区，造成内存资源浪费。 
+    */
     if (listLength(server.slaves) == 1 && server.repl_backlog == NULL) {
         /* When we create the backlog from scratch, we always use a new
          * replication ID and clear the ID2, since there is no valid
          * past history. */
         changeReplicationId();
         clearReplicationId2();
+        /* 创建循环缓冲区 */
         createReplicationBacklog();
     }
 
