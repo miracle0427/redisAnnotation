@@ -38,6 +38,7 @@
 
 /* Representation of a latency sample: the sampling time and the latency
  * observed in milliseconds. */
+/* 记录延迟事件的采样时间和事件的实际执行时长 */
 struct latencySample {
     int32_t time; /* We don't use time_t to force 4 bytes usage everywhere. */
     uint32_t latency; /* Latency in milliseconds. */
@@ -47,6 +48,7 @@ struct latencySample {
 struct latencyTimeSeries {
     int idx; /* Index of the next sample to store. */
     uint32_t max; /* Max latency observed for this event. */
+    /* 记录了针对某一类时间的一系列采样结果 */
     struct latencySample samples[LATENCY_TS_LEN]; /* Latest history. */
 };
 
@@ -81,6 +83,11 @@ int THPIsEnabled(void);
 }
 
 /* Add the sample only if the elapsed time is >= to the configured threshold. */
+/*
+    latencyAddSample 函数是被封装在了latencyAddSamplelfNeeded 函数中。
+    在latencyAddSamplelfNeeded函数中，只会在事件执行时长超过
+    latency-monitor-threshold配置项的值时，才调用latencyAddSample函数记录采样结果。
+*/
 #define latencyAddSampleIfNeeded(event,var) \
     if (server.latency_monitor_threshold && \
         (var) >= server.latency_monitor_threshold) \

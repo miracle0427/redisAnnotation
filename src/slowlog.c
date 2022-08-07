@@ -48,6 +48,12 @@
 slowlogEntry *slowlogCreateEntry(client *c, robj **argv, int argc, long long duration) {
     slowlogEntry *se = zmalloc(sizeof(*se));
     int j, slargc = argc;
+    /*
+        考虑到内存资源有限，在创建慢命令日志项时，也会判断命令参数个数。
+        如果命令参数个数,超出了阈值 SLOWLOG_ENTRY_MAX_ARGC 这个宏定义的大小(默认32)时，
+        它就不会记录超出阈值的参数了，而是记录下剩余的参数个数。这样一来,慢命令日志项中
+        就既记录了部分命令参数,有助于排查问题，也避免了记录过多参数,占用过多内存。
+    */
 
     if (slargc > SLOWLOG_ENTRY_MAX_ARGC) slargc = SLOWLOG_ENTRY_MAX_ARGC;
     se->argc = slargc;
@@ -120,6 +126,14 @@ void slowlogInit(void) {
 /* Push a new entry into the slow log.
  * This function will make sure to trim the slow log accordingly to the
  * configured max length. */
+/*
+    这个函数的参数包含了当前执行命令及其参数argv,以及当前命令的执行时长duration。
+
+    这个函数的逻辑也不复杂，它会判断当前命令的执行时长duration,是否大于redis.conf配置文件中的
+    慢命令日志阈值slowlog_log_slower_than.如果大于的话，它就会调用slowlogCreateEntry函数，
+    为这条命令创建一条慢命令日志项,并调用listAddNodeHead函数，把这条日志项加入到日志列表头
+
+*/
 void slowlogPushEntryIfNeeded(client *c, robj **argv, int argc, long long duration) {
     if (server.slowlog_log_slower_than < 0) return; /* Slowlog disabled */
     if (duration >= server.slowlog_log_slower_than)

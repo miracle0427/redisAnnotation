@@ -95,7 +95,15 @@ void latencyMonitorInit(void) {
  * This function is usually called via latencyAddSampleIfNeeded(), that
  * is a macro that only adds the sample if the latency is higher than
  * server.latency_monitor_threshold. */
+/*
+    event要记录的事件名称，这实际是对应了latency_events哈希表中的一个哈希项。
+    latency该事件的执行时长。
+*/
 void latencyAddSample(char *event, mstime_t latency) {
+    /*
+        首先，根据传入的事件名称,在latency_events 哈希表中查找该事件。
+        如果该事件对应的哈希项不存在，在哈希表中加入该事件
+    */
     struct latencyTimeSeries *ts = dictFetchValue(server.latency_events,event);
     time_t now = time(NULL);
     int prev;
@@ -108,11 +116,25 @@ void latencyAddSample(char *event, mstime_t latency) {
         memset(ts->samples,0,sizeof(ts->samples));
         dictAdd(server.latency_events,zstrdup(event),ts);
     }
-
+    /*
+        然后，根据传入的事件执行时间，更新当前记录的该类事件的最大执行时间
+    */
     if (latency > ts->max) ts->max = latency;
 
     /* If the previous sample is in the same second, we update our old sample
      * if this latency is > of the old one, or just return. */
+    /*
+        最后，记录当前的采样结果。
+        
+        不过在这一步, 如果发现当前的采样结果，和前一个采样结果是在同一秒中获得的，
+        并且如果当前采样结果的事件执行时长，大于前一个采样结果的话，那么就会直接更新
+        前一个采样结果中记录的执行时长了，而不是新插入一个采样结果。
+        否则的话，才会新插入一个采样结果。这样设计的目的，也是为了避免在同一秒中记录过多的采样结果。
+
+        注意，在记录采样结果时,会重复使用采样结果数组latencyTimeSeries。所以，
+        如果采样结果数量超过数组默认大小时，旧的采样结果是会被覆盖掉的。
+        如果要记录更多的采样结果，就需要扩大latencyTimeSeries数组的长度。
+    */
     prev = (ts->idx + LATENCY_TS_LEN - 1) % LATENCY_TS_LEN;
     if (ts->samples[prev].time == now) {
         if (latency > ts->samples[prev].latency)
@@ -215,6 +237,7 @@ void analyzeLatencyForEvent(char *event, struct latencyStats *ls) {
 
 /* Create a human readable report of latency events for this Redis instance. */
 sds createLatencyReport(void) {
+    /* 定义了多个int变量，当这些变量的值为1时，就表示建议redis使用者采用一种应对高延迟的措施 */
     sds report = sdsempty();
     int advise_better_vm = 0;       /* Better virtual machines. */
     int advise_slowlog_enabled = 0; /* Enable slowlog. */
@@ -293,18 +316,24 @@ sds createLatencyReport(void) {
         }
 
         /* Potentially commands. */
+        /*
+            针对command事件，根据slowlog的设置情况，给出启用slowlog、
+            调整slowlog阈值、检查slowlog日志结果和避免使用bigkey的应对建议。
+        */
         if (!strcasecmp(event,"command")) {
+            /* 如果没有启用slowlog，则建议启用slowlog */
             if (server.slowlog_log_slower_than < 0) {
                 advise_slowlog_enabled = 1;
                 advices++;
+                /* 如果slowlog使用的命令时长阈值太大，建议调整slowlog阈值 */
             } else if (server.slowlog_log_slower_than/1000 >
                        server.latency_monitor_threshold)
             {
                 advise_slowlog_tuning = 1;
                 advices++;
             }
-            advise_slowlog_inspect = 1;
-            advise_large_objects = 1;
+            advise_slowlog_inspect = 1; /* 建议检查slowlog结果 */
+            advise_large_objects = 1;   /* 建议避免使用bigkey */
             advices += 2;
         }
 

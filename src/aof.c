@@ -506,6 +506,11 @@ try_fsync:
     if (server.aof_fsync == AOF_FSYNC_ALWAYS) {
         /* redis_fsync is defined as fdatasync() for Linux in order to avoid
          * flushing metadata. */
+        /*
+            在调用latencyAddSamplelfNeeded函数记录采样结果时，
+            经常会在延迟事件执行前，调用latencyStartMonitor函数开始计时，
+            并在事件执行结束后，调用latencyEndMonitor函数结束计时和计算事件执行时长。
+        */
         latencyStartMonitor(latency);
         redis_fsync(server.aof_fd); /* Let's try to get this data on the disk */
         latencyEndMonitor(latency);

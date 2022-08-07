@@ -1047,6 +1047,7 @@ struct redisServer {
     long long stat_sync_full;       /* Number of full resyncs with slaves. */
     long long stat_sync_partial_ok; /* Number of accepted PSYNC requests. */
     long long stat_sync_partial_err;/* Number of unaccepted PSYNC requests. */
+    /* 记录慢命令日志 */
     list *slowlog;                  /* SLOWLOG list of commands */
     long long slowlog_entry_id;     /* SLOWLOG current entry ID */
     long long slowlog_log_slower_than; /* SLOWLOG time limit (to get logged) */
@@ -1303,6 +1304,7 @@ struct redisServer {
     int lazyfree_lazy_server_del;
     /* Latency monitor */
     long long latency_monitor_threshold;
+    /* 记录不同事件的采样结果数组 */
     dict *latency_events;
     /* Assert & bug reporting */
     const char *assert_failed;
